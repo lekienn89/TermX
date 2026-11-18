@@ -385,7 +385,9 @@ string_state:
 
   if(string_start) {
     size_t string_len = bytes + pos - string_start;
-    if(vt->parser.in_esc)
+    /* TermX: ESC followed by a C0 restarts string_start after the ESC, so
+     * the length can already be 0 here; do not let it wrap around */
+    if(vt->parser.in_esc && string_len)
       string_len -= 1;
     string_fragment(vt, string_start, string_len, false);
   }

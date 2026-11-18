@@ -10,4 +10,9 @@ Local changes (marked `TermX:` in the source), found by fuzzing:
 - `src/screen.c`: reflow on resize walked to row -1 when the first row carried
   a continuation flag, reading outside the screen buffer. The walk now stops at row 0.
 
+- `src/parser.c`: an OSC/DCS string with ESC followed by a C0 control at the end
+  of a read made the fragment length wrap to SIZE_MAX (huge over-read).
+- `src/screen.c`: resize called `abort()` when it could not place the cursor;
+  the cursor is now clamped into the new screen instead.
+
 Inputs that triggered these are kept in `fuzz/regressions/` and replayed by ctest.
