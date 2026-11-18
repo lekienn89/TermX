@@ -18,6 +18,7 @@ termx_add_test(tst_historystore)
 termx_add_test(tst_jsonfile)
 termx_add_test(tst_sessionlogger)
 termx_add_test(tst_quickconnect)
+termx_add_test(tst_sessionimport)
 termx_add_test(tst_snippetstore)
 termx_add_test(tst_fuzzymatch)
 

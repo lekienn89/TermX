@@ -9,23 +9,39 @@
 #include "util/AppPaths.h"
 
 #include <QApplication>
-#include <QIcon>
 #include <QCommandLineParser>
 #include <QDesktopServices>
+#include <QIcon>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QTimer>
+#include <QTranslator>
 #include <QUrl>
 #include <QUrlQuery>
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 
 using namespace termx;
 
 namespace {
+
+// The UI is English only; this gives tr("%n item(s)", nullptr, n) proper
+// English plurals without shipping a .qm file.
+class EnglishPlurals : public QTranslator {
+public:
+    using QTranslator::QTranslator;
+    bool isEmpty() const override { return false; }
+    QString translate(const char *, const char *source, const char *, int n) const override
+    {
+        if (n < 0 || !source || !std::strstr(source, "(s)"))
+            return QString();
+        return QString::fromUtf8(source).replace(QStringLiteral("(s)"), n == 1 ? QString() : QStringLiteral("s"));
+    }
+};
 
 // Detects repeated crashes during start-up and offers a safe mode that does
 // not reopen the previous tabs.
@@ -70,6 +86,8 @@ int main(int argc, char *argv[])
 {
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     QApplication app(argc, argv);
+    EnglishPlurals plurals;
+    QApplication::installTranslator(&plurals);
     QApplication::setApplicationName(QStringLiteral("TermX"));
     QApplication::setOrganizationName(QStringLiteral("TermX"));
     QApplication::setApplicationVersion(QStringLiteral(TERMX_VERSION));

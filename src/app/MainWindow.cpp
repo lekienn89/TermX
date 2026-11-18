@@ -5,6 +5,7 @@
 #include "PromptDialog.h"
 #include "PreferencesDialog.h"
 #include "QuickConnectBar.h"
+#include "session/SessionImport.h"
 #include "CommandPalette.h"
 #include "SnippetPanel.h"
 #include "session/SnippetStore.h"
@@ -281,6 +282,37 @@ void MainWindow::createActions()
             closeView(v);
     });
     file->addSeparator();
+    QMenu *imp = file->addMenu(tr("Import Sessions"));
+#ifdef Q_OS_WIN
+    add(imp, tr("From PuTTY"), QString(), [this] { importSessions(SessionImport::readPuttyRegistry(), tr("PuTTY")); });
+#endif
+    add(imp, tr("From PuTTY .reg Export..."), QString(), [this] {
+        const QString path = QFileDialog::getOpenFileName(this, tr("Import PuTTY sessions"), QString(),
+                                                          tr("Registry files (*.reg);;All files (*)"));
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, tr("Import"), tr("Cannot read %1: %2").arg(path, f.errorString()));
+            return;
+        }
+        importSessions(SessionImport::parsePuttyReg(f.read(16 * 1024 * 1024)), tr("PuTTY"));
+    });
+    add(imp, tr("From OpenSSH Config..."), QString(), [this] {
+        const QString home = QDir::homePath();
+        const QString def = home + QStringLiteral("/.ssh/config");
+        const QString path = QFileDialog::getOpenFileName(this, tr("Import OpenSSH config"),
+                                                          QFile::exists(def) ? def : home + QStringLiteral("/.ssh"),
+                                                          tr("All files (*)"));
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QMessageBox::warning(this, tr("Import"), tr("Cannot read %1: %2").arg(path, f.errorString()));
+            return;
+        }
+        importSessions(SessionImport::parseOpenSshConfig(QString::fromUtf8(f.read(4 * 1024 * 1024)), home), tr("OpenSSH config"));
+    });
     add(file, tr("Preferences..."), QStringLiteral("Ctrl+,"), [this] { showPreferences(); });
     add(file, tr("Open Data Folder"), QString(), [] {
         QDesktopServices::openUrl(QUrl::fromLocalFile(AppPaths::dataDir()));
@@ -514,6 +546,59 @@ void MainWindow::showPreferences(bool keyboardPage)
 
     // setThemeMode re-applies appearance to every terminal.
     setThemeMode(dlg.themeMode());
+}
+
+void MainWindow::importSessions(const SessionImport::Result &r, const QString &source)
+{
+    QSet<QString> existing;
+    for (const SessionConfig &c : m_sessions->sessions())
+        existing.insert(c.folder + QLatin1Char('/') + c.name);
+    QList<SessionConfig> fresh;
+    int duplicates = 0;
+    for (const SessionConfig &c : r.sessions) {
+        const QString key = c.folder + QLatin1Char('/') + c.name;
+        if (existing.contains(key)) {
+            ++duplicates;
+            continue;
+        }
+        existing.insert(key);
+        fresh << c;
+    }
+
+    QString text;
+    if (fresh.isEmpty())
+        text = r.sessions.isEmpty() ? tr("No sessions were found in %1.").arg(source)
+                                    : tr("All %n session(s) from %1 are already imported.", nullptr, int(r.sessions.size())).arg(source);
+    else
+        text = tr("Import %n session(s) from %1 into the \"%2\" folder?", nullptr, int(fresh.size()))
+                   .arg(source, fresh.first().folder);
+    QMessageBox box(fresh.isEmpty() ? QMessageBox::Information : QMessageBox::Question, tr("Import sessions"), text,
+                    QMessageBox::NoButton, this);
+    QStringList info;
+    for (int i = 0; i < fresh.size() && i < 8; ++i)
+        info << QStringLiteral("\u2022 %1  (%2)").arg(fresh[i].name, fresh[i].target());
+    if (fresh.size() > 8)
+        info << tr("and %n more", nullptr, int(fresh.size() - 8));
+    if (duplicates > 0 && !fresh.isEmpty())
+        info << tr("%n already imported, skipped.", nullptr, duplicates);
+    box.setInformativeText(info.join(QLatin1Char('\n')));
+    if (!r.warnings.isEmpty())
+        box.setDetailedText(r.warnings.join(QLatin1Char('\n')));
+    QPushButton *ok = nullptr;
+    if (fresh.isEmpty()) {
+        box.addButton(QMessageBox::Ok);
+    } else {
+        ok = box.addButton(tr("Import"), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(ok);
+    }
+    box.exec();
+    if (!ok || box.clickedButton() != ok)
+        return;
+    for (const SessionConfig &c : std::as_const(fresh))
+        m_sessions->upsert(c);
+    m_sessionDock->show();
+    m_toast->showMessage(tr("Imported %n session(s)", nullptr, int(fresh.size())), fresh.first().folder, {}, 4000);
 }
 
 void MainWindow::showShortcutHelp()
@@ -1159,7 +1244,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
             ++connected;
     if (connected > 0) {
         const auto r = QMessageBox::question(this, tr("Exit TermX"),
-                                             tr("%n session(s) are still connected. Disconnect and exit?", nullptr, connected));
+                                             tr("%n session(s) still connected. Disconnect and exit?", nullptr, connected));
         if (r != QMessageBox::Yes) {
             e->ignore();
             return;

@@ -17,6 +17,7 @@ add_library(termx_core STATIC
     session/SessionConfig.cpp session/SessionConfig.h
     session/SessionStore.cpp session/SessionStore.h
     session/QuickConnect.cpp session/QuickConnect.h
+    session/SessionImport.cpp session/SessionImport.h
     session/SnippetStore.cpp session/SnippetStore.h
     session/CredentialStore.cpp session/CredentialStore.h
     util/AppPaths.cpp util/AppPaths.h

@@ -4,6 +4,7 @@
 #include "serial/DeviceProfiles.h"
 #include "serial/SerialPortWatcher.h"
 #include "session/SessionConfig.h"
+#include "session/SessionImport.h"
 #include "transport/Transport.h"
 
 #include <QMainWindow>
@@ -77,6 +78,7 @@ private:
     void showAbout();
     void showPreferences(bool keyboardPage = false);
     void showShortcutHelp();
+    void importSessions(const SessionImport::Result &r, const QString &source);
     void registerShortcut(QAction *a, const QString &menuTitle);
     void applyShortcutOverrides();
     void showCommandPalette();
