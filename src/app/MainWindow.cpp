@@ -3,6 +3,7 @@
 
 #include "Panels.h"
 #include "PromptDialog.h"
+#include "PreferencesDialog.h"
 #include "QuickConnectBar.h"
 #include "CommandPalette.h"
 #include "SnippetPanel.h"
@@ -36,6 +37,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabBar>
@@ -260,6 +262,7 @@ void MainWindow::createActions()
         a->setShortcutContext(Qt::WindowShortcut);
         connect(a, &QAction::triggered, this, slot);
         addAction(a);
+        registerShortcut(a, menu->title());
         return a;
     };
 
@@ -278,6 +281,7 @@ void MainWindow::createActions()
             closeView(v);
     });
     file->addSeparator();
+    add(file, tr("Preferences..."), QStringLiteral("Ctrl+,"), [this] { showPreferences(); });
     add(file, tr("Open Data Folder"), QString(), [] {
         QDesktopServices::openUrl(QUrl::fromLocalFile(AppPaths::dataDir()));
     });
@@ -317,6 +321,8 @@ void MainWindow::createActions()
     QAction *qcb = m_actQuickBar = view->addAction(tr("Quick Connect Bar"));
     qcb->setCheckable(true);
     qcb->setChecked(!m_quickBar->isHidden());
+    addAction(qcb);
+    registerShortcut(qcb, view->title());
     connect(qcb, &QAction::toggled, this, [this](bool on) {
         m_quickBar->setVisible(on);
         m_settings->setValue(QStringLiteral("quickConnect/visible"), on);
@@ -326,6 +332,8 @@ void MainWindow::createActions()
     QAction *hist = m_historyDock->toggleViewAction();
     hist->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+H")));
     view->addAction(hist);
+    addAction(hist);
+    registerShortcut(hist, view->title());
     connect(hist, &QAction::toggled, this, [this](bool on) {
         if (on)
             QTimer::singleShot(0, m_historyPanel, &HistoryPanel::focusSearch);
@@ -333,6 +341,8 @@ void MainWindow::createActions()
     QAction *snip = m_snippetDock->toggleViewAction();
     snip->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
     view->addAction(snip);
+    addAction(snip);
+    registerShortcut(snip, view->title());
     connect(snip, &QAction::toggled, this, [this](bool on) {
         if (on)
             QTimer::singleShot(0, m_snippetPanel, &SnippetPanel::focusFilter);
@@ -348,6 +358,7 @@ void MainWindow::createActions()
         a->setChecked(i == current);
         group->addAction(a);
         connect(a, &QAction::triggered, this, [this, i] { setThemeMode(i); });
+        m_themeActions << a;
     }
     add(view, tr("Zoom In"), QStringLiteral("Ctrl+Alt+="), [this] { zoom(1); });
     add(view, tr("Zoom Out"), QStringLiteral("Ctrl+Alt+-"), [this] { zoom(-1); });
@@ -418,33 +429,123 @@ void MainWindow::createActions()
     });
 
     // Tab navigation.
-    auto *next = new QAction(this);
+    auto *next = new QAction(tr("Next Tab"), this);
     next->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Tab")), QKeySequence(QStringLiteral("Ctrl+PgDown"))});
     connect(next, &QAction::triggered, this, [this] {
         if (m_tabs->count() > 1)
             m_tabs->setCurrentIndex((m_tabs->currentIndex() + 1) % m_tabs->count());
     });
     addAction(next);
-    auto *prev = new QAction(this);
+    registerShortcut(next, tr("Tabs"));
+    auto *prev = new QAction(tr("Previous Tab"), this);
     prev->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Shift+Tab")), QKeySequence(QStringLiteral("Ctrl+PgUp"))});
     connect(prev, &QAction::triggered, this, [this] {
         if (m_tabs->count() > 1)
             m_tabs->setCurrentIndex((m_tabs->currentIndex() + m_tabs->count() - 1) % m_tabs->count());
     });
     addAction(prev);
+    registerShortcut(prev, tr("Tabs"));
 
     QMenu *help = menuBar()->addMenu(tr("&Help"));
-    add(help, tr("Keyboard Shortcuts"), QString(), [this] {
-        QMessageBox::information(this, tr("Keyboard shortcuts"),
-            tr("Ctrl+Shift+N  New session\nCtrl+Shift+T  New local shell\nCtrl+Shift+W  Close pane\n"
-               "Ctrl+Shift+C / V  Copy / Paste (also Ctrl+Insert / Shift+Insert)\n"
-               "Ctrl+Shift+F  Find in scrollback\nCtrl+Shift+H  History panel\n"
-               "Ctrl+Shift+D / E  Split right / down\nCtrl+Shift+R  Reconnect\nCtrl+Shift+B  Send Break\n"
-               "Ctrl+Shift+L  Log to file\nCtrl+Tab  Next tab\nShift+PgUp / PgDn  Scroll\n"
-               "Ctrl+Alt+= / -  Zoom\n\nSuggestions while typing: Right or End accepts,\n"
-               "Alt+Up / Alt+Down choose, Esc hides.\nSelecting text copies it; middle-click pastes."));
-    });
+    add(help, tr("Keyboard Shortcuts"), QString(), [this] { showShortcutHelp(); });
     add(help, tr("About TermX"), QString(), [this] { showAbout(); });
+
+    applyShortcutOverrides();
+}
+
+void MainWindow::registerShortcut(QAction *a, const QString &menuTitle)
+{
+    QString menu = menuTitle;
+    menu.remove(QLatin1Char('&'));
+    QString text = a->text();
+    text.remove(QLatin1Char('&'));
+    text.remove(QStringLiteral("..."));
+    QString id = menu + QLatin1Char('.');
+    for (const QChar c : text)
+        if (c.isLetterOrNumber())
+            id += c;
+    a->setObjectName(id);
+    a->setProperty("shortcutId", id);
+    a->setProperty("menuPath", QStringLiteral("%1 › %2").arg(menu, text.trimmed()));
+    a->setProperty("defaultShortcuts", QKeySequence::listToString(a->shortcuts(), QKeySequence::PortableText));
+    m_shortcutActions << a;
+}
+
+void MainWindow::applyShortcutOverrides()
+{
+    m_settings->beginGroup(QStringLiteral("shortcuts"));
+    QList<QKeySequence> all;
+    for (QAction *a : std::as_const(m_shortcutActions)) {
+        const QString id = a->property("shortcutId").toString();
+        const QString value = m_settings->contains(id) ? m_settings->value(id).toString()
+                                                       : a->property("defaultShortcuts").toString();
+        a->setShortcuts(QKeySequence::listFromString(value, QKeySequence::PortableText));
+        all += a->shortcuts();
+    }
+    m_settings->endGroup();
+    TerminalWidget::setAppShortcuts(all);
+}
+
+void MainWindow::showPreferences(bool keyboardPage)
+{
+    PreferencesDialog dlg(m_shortcutActions, this);
+    if (keyboardPage)
+        dlg.showKeyboardPage();
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    Theme::prefs() = dlg.prefs();
+    Theme::savePrefs(*m_settings);
+    Theme::setTerminalFontSize(dlg.fontSize());
+    m_settings->setValue(QStringLiteral("ui/fontSize"), Theme::terminalFontSize());
+
+    const QHash<QString, QList<QKeySequence>> keys = dlg.shortcuts();
+    m_settings->beginGroup(QStringLiteral("shortcuts"));
+    for (QAction *a : std::as_const(m_shortcutActions)) {
+        const QString id = a->property("shortcutId").toString();
+        const QString value = QKeySequence::listToString(keys.value(id), QKeySequence::PortableText);
+        if (value == a->property("defaultShortcuts").toString())
+            m_settings->remove(id);
+        else
+            m_settings->setValue(id, value);
+    }
+    m_settings->endGroup();
+    applyShortcutOverrides();
+
+    // setThemeMode re-applies appearance to every terminal.
+    setThemeMode(dlg.themeMode());
+}
+
+void MainWindow::showShortcutHelp()
+{
+    QString html = QStringLiteral("<table cellspacing='0' cellpadding='3'>");
+    QString lastMenu;
+    for (QAction *a : std::as_const(m_shortcutActions)) {
+        if (a->shortcuts().isEmpty())
+            continue;
+        const QString path = a->property("menuPath").toString();
+        const QString menu = path.section(QStringLiteral(" › "), 0, 0);
+        if (menu != lastMenu) {
+            html += QStringLiteral("<tr><td colspan='2'><b>%1</b></td></tr>").arg(menu.toHtmlEscaped());
+            lastMenu = menu;
+        }
+        QStringList keys;
+        for (const QKeySequence &k : a->shortcuts())
+            keys << k.toString(QKeySequence::NativeText);
+        html += QStringLiteral("<tr><td style='padding-right:24px'>%1</td><td><code>%2</code></td></tr>")
+                    .arg(path.section(QStringLiteral(" › "), 1).toHtmlEscaped(), keys.join(QStringLiteral(", ")).toHtmlEscaped());
+    }
+    html += QStringLiteral("</table><p><b>%1</b><br>%2</p>")
+                .arg(tr("In the terminal").toHtmlEscaped(),
+                     tr("Ctrl+Insert / Shift+Insert copy and paste. Shift+PgUp / PgDn scroll.<br>"
+                        "Suggestions while typing: Right or End accepts, Alt+Up / Alt+Down choose, Esc hides.<br>"
+                        "Selecting text copies it (can be turned off); middle-click pastes."));
+    QMessageBox box(QMessageBox::NoIcon, tr("Keyboard shortcuts"), html, QMessageBox::Close, this);
+    box.setTextFormat(Qt::RichText);
+    QPushButton *customize = box.addButton(tr("Customize..."), QMessageBox::ActionRole);
+    box.exec();
+    if (box.clickedButton() == customize)
+        showPreferences(true);
 }
 
 // ---------------------------------------------------------------- sessions
@@ -950,6 +1051,8 @@ void MainWindow::setThemeMode(int mode)
 {
     Theme::apply(Theme::Mode(mode));
     m_settings->setValue(QStringLiteral("ui/theme"), Theme::modeName(Theme::Mode(mode)));
+    if (mode >= 0 && mode < m_themeActions.size())
+        m_themeActions[mode]->setChecked(true);
     for (TerminalView *v : allViews())
         v->terminal()->applyAppearance();
     for (int i = 0; i < m_tabs->count(); ++i)

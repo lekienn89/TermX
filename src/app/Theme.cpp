@@ -5,6 +5,7 @@
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QPalette>
+#include <QSettings>
 #include <QStyleFactory>
 #include <QStyleHints>
 #include <QWidget>
@@ -21,6 +22,7 @@ Theme::Mode g_mode = Theme::Mode::System;
 bool g_dark = true;
 qreal g_fontSize = 11.0;
 TerminalColors g_term;
+TerminalPrefs g_prefs;
 
 TerminalColors darkColors()
 {
@@ -177,20 +179,47 @@ Theme::Mode Theme::mode() { return g_mode; }
 const TerminalColors &Theme::terminal() { return g_term; }
 QColor Theme::accent() { return g_dark ? QColor(0x4C8DFF) : QColor(0x0969DA); }
 
-QFont Theme::terminalFont()
+QFont Theme::terminalFont() { return terminalFont(g_prefs.fontFamily, g_fontSize); }
+
+QFont Theme::terminalFont(const QString &family, qreal pt)
 {
     QFont f;
-    f.setFamilies({QStringLiteral("Cascadia Mono"), QStringLiteral("Cascadia Code"), QStringLiteral("Consolas"),
-                   QStringLiteral("DejaVu Sans Mono"), QStringLiteral("Liberation Mono"), QStringLiteral("Courier New")});
+    QStringList families;
+    if (!family.isEmpty())
+        families << family;
+    families << QStringList{QStringLiteral("Cascadia Mono"), QStringLiteral("Cascadia Code"), QStringLiteral("Consolas"),
+                   QStringLiteral("DejaVu Sans Mono"), QStringLiteral("Liberation Mono"), QStringLiteral("Courier New")};
+    f.setFamilies(families);
     f.setStyleHint(QFont::TypeWriter, QFont::PreferDefault);
     f.setFixedPitch(true);
-    f.setPointSizeF(g_fontSize);
+    f.setPointSizeF(qBound(6.0, pt, 48.0));
     f.setKerning(false);
     return f;
 }
 
 void Theme::setTerminalFontSize(qreal pt) { g_fontSize = qBound(6.0, pt, 48.0); }
 qreal Theme::terminalFontSize() { return g_fontSize; }
+
+TerminalPrefs &Theme::prefs() { return g_prefs; }
+
+void Theme::loadPrefs(const QSettings &s)
+{
+    TerminalPrefs d;
+    g_prefs.fontFamily = s.value(QStringLiteral("terminal/fontFamily"), d.fontFamily).toString();
+    g_prefs.cursorShape = qBound(0, s.value(QStringLiteral("terminal/cursorShape"), d.cursorShape).toInt(), 3);
+    g_prefs.cursorBlink = s.value(QStringLiteral("terminal/cursorBlink"), d.cursorBlink).toBool();
+    g_prefs.copyOnSelect = s.value(QStringLiteral("terminal/copyOnSelect"), d.copyOnSelect).toBool();
+    g_prefs.rightClickPaste = s.value(QStringLiteral("terminal/rightClickPaste"), d.rightClickPaste).toBool();
+}
+
+void Theme::savePrefs(QSettings &s)
+{
+    s.setValue(QStringLiteral("terminal/fontFamily"), g_prefs.fontFamily);
+    s.setValue(QStringLiteral("terminal/cursorShape"), g_prefs.cursorShape);
+    s.setValue(QStringLiteral("terminal/cursorBlink"), g_prefs.cursorBlink);
+    s.setValue(QStringLiteral("terminal/copyOnSelect"), g_prefs.copyOnSelect);
+    s.setValue(QStringLiteral("terminal/rightClickPaste"), g_prefs.rightClickPaste);
+}
 
 void Theme::applyTitleBar(QWidget *w)
 {

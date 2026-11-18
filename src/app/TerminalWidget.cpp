@@ -94,6 +94,16 @@ TerminalWidget::TerminalWidget(TerminalSession *session, HistoryStore *history, 
 
 TerminalWidget::~TerminalWidget() = default;
 
+QSet<int> TerminalWidget::s_appShortcuts;
+
+void TerminalWidget::setAppShortcuts(const QList<QKeySequence> &keys)
+{
+    s_appShortcuts.clear();
+    for (const QKeySequence &k : keys)
+        if (k.count() == 1)
+            s_appShortcuts.insert(k[0].toCombined());
+}
+
 void TerminalWidget::updateMetrics()
 {
     m_font = Theme::terminalFont();
@@ -226,7 +236,8 @@ void TerminalWidget::paintEvent(QPaintEvent *e)
     const CursorInfo c = scr.cursor();
     const int crow = c.row + m_scrollOffset;
     const bool showCursor = c.visible && crow >= 0 && crow < scr.rows()
-                            && (!m_hasFocus || !c.blink || m_blinkOn || m_session->state() != TransportState::Connected);
+                            && (!m_hasFocus || !c.blink || !Theme::prefs().cursorBlink || m_blinkOn
+                                || m_session->state() != TransportState::Connected);
     if (showCursor) {
         scr.line(scr.firstScreenLine() + c.row, m_cells);
         const int col = std::clamp(c.col, 0, scr.cols() - 1);
@@ -234,13 +245,20 @@ void TerminalWidget::paintEvent(QPaintEvent *e)
         const qreal w = m_cw * (cell.width == 2 ? 2 : 1);
         const QRectF cr(col * m_cw, crow * m_ch, w, m_ch);
         QColor cursorColor = tc.cursor;
+        int shape = c.shape;
+        switch (Theme::prefs().cursorShape) {
+        case TerminalPrefs::CursorBlock: shape = CursorInfo::Block; break;
+        case TerminalPrefs::CursorUnderline: shape = CursorInfo::Underline; break;
+        case TerminalPrefs::CursorBar: shape = CursorInfo::Bar; break;
+        default: break;
+        }
         if (!m_hasFocus) {
             p.setPen(QPen(cursorColor, 1));
             p.setBrush(Qt::NoBrush);
             p.drawRect(cr.adjusted(0.5, 0.5, -0.5, -0.5));
-        } else if (c.shape == CursorInfo::Underline) {
+        } else if (shape == CursorInfo::Underline) {
             p.fillRect(QRectF(cr.left(), cr.bottom() - 2, w, 2), cursorColor);
-        } else if (c.shape == CursorInfo::Bar) {
+        } else if (shape == CursorInfo::Bar) {
             p.fillRect(QRectF(cr.left(), cr.top(), 2, m_ch), cursorColor);
         } else {
             p.fillRect(cr, cursorColor);
@@ -751,6 +769,9 @@ bool TerminalWidget::event(QEvent *e)
         auto *ke = static_cast<QKeyEvent *>(e);
         const Qt::KeyboardModifiers m = ke->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier);
         const int k = ke->key();
+        // A shortcut the user (or TermX) bound explicitly always wins.
+        if (s_appShortcuts.contains(QKeyCombination(ke->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier), Qt::Key(k)).toCombined()))
+            return QWidget::event(e);
         // Keys the terminal must receive even if an application shortcut uses them.
         const bool ctrlNoShift = (m & Qt::ControlModifier) && !(m & Qt::ShiftModifier) && !(m & Qt::AltModifier)
                                  && k != Qt::Key_Tab && k != Qt::Key_Backtab;
@@ -1127,10 +1148,10 @@ void TerminalWidget::mouseReleaseEvent(QMouseEvent *e)
     }
     m_selecting = false;
     m_autoScroll.stop();
-    if (hasSelection())
-        copySelection();   // copy on select (PuTTY / TeraTerm behaviour)
-    else
+    if (!hasSelection())
         m_selActive = false;
+    else if (Theme::prefs().copyOnSelect)
+        copySelection();   // copy on select (PuTTY / TeraTerm behaviour)
     update();
 }
 
@@ -1183,6 +1204,16 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *e)
 {
     if (m_session->screen().mouseMode() != 0 && !(e->modifiers() & Qt::ShiftModifier) && m_scrollOffset == 0)
         return;
+    if (Theme::prefs().rightClickPaste && !(e->modifiers() & Qt::ShiftModifier)) {
+        // PuTTY style: right-click copies a pending selection, otherwise pastes.
+        if (hasSelection() && !Theme::prefs().copyOnSelect) {
+            copySelection();
+            clearSelection();
+        } else {
+            pasteClipboard();
+        }
+        return;
+    }
     QMenu menu(this);
     QAction *copy = menu.addAction(tr("Copy"), this, &TerminalWidget::copySelection);
     copy->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")));

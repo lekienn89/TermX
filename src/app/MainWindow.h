@@ -75,6 +75,10 @@ private:
     void zoom(int delta);
     void saveState();
     void showAbout();
+    void showPreferences(bool keyboardPage = false);
+    void showShortcutHelp();
+    void registerShortcut(QAction *a, const QString &menuTitle);
+    void applyShortcutOverrides();
     void showCommandPalette();
     void runSnippetText(const QString &text, bool pressEnter);
     void setBroadcastMode(int mode);   // 0 off, 1 this tab, 2 all tabs
@@ -107,6 +111,8 @@ private:
     QLabel *m_statusBroadcast;
     int m_broadcastMode = 0;
     QList<QAction *> m_broadcastActions;
+    QList<QAction *> m_shortcutActions;
+    QList<QAction *> m_themeActions;
 
     QAction *m_actReconnect = nullptr;
     QAction *m_actDisconnect = nullptr;

@@ -8,7 +8,9 @@
 
 #include <QFont>
 #include <QPointer>
+#include <QKeySequence>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTimer>
 #include <QWidget>
 
@@ -59,6 +61,10 @@ public:
     void typeText(const QString &text);
 
     void applyAppearance();   // after theme / font changes
+
+    // Key chords bound to application actions. They reach the action even
+    // when the terminal would normally keep them (e.g. a user-chosen Ctrl+,).
+    static void setAppShortcuts(const QList<QKeySequence> &keys);
     QSize cellSize() const { return QSize(int(m_cw), int(m_ch)); }
     QSize sizeForCells(int cols, int rows) const;
 
@@ -156,6 +162,7 @@ private:
     QTimer m_suggestTimer;
 
     mutable std::vector<Cell> m_cells;
+    static QSet<int> s_appShortcuts;
 };
 
 } // namespace termx

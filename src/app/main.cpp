@@ -99,6 +99,7 @@ int main(int argc, char *argv[])
 
     QSettings settings(AppPaths::settingsFile(), QSettings::IniFormat);
     Theme::setTerminalFontSize(settings.value(QStringLiteral("ui/fontSize"), 11.0).toDouble());
+    Theme::loadPrefs(settings);
     Theme::apply(Theme::modeFromName(settings.value(QStringLiteral("ui/theme"), QStringLiteral("system")).toString()));
 
     StartupGuard guard(settings);
