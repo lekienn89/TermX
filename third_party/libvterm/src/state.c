@@ -114,6 +114,11 @@ static void scroll(VTermState *state, VTermRect rect, int downward, int rightwar
   if(!downward && !rightward)
     return;
 
+  /* TermX: a stale scroll region (e.g. after shrinking) can give an empty or
+   * inverted rectangle; memmove below would get a negative size */
+  if(rect.end_row <= rect.start_row || rect.end_col <= rect.start_col)
+    return;
+
   int rows = rect.end_row - rect.start_row;
   if(downward > rows)
     downward = rows;
@@ -361,6 +366,10 @@ static int on_text(const char bytes[], size_t len, void *user)
     for( ; i < glyph_ends; i++) {
       chars[i - glyph_starts] = codepoints[i];
       int this_width = vterm_unicode_width(codepoints[i]);
+      /* TermX: control codepoints (e.g. UTF-8 encoded C1) have width -1,
+       * which moved the cursor left of column 0. Show them as one cell. */
+      if(this_width < 0)
+        this_width = 1;
 #ifdef DEBUG
       if(this_width < 0) {
         fprintf(stderr, "Text with negative-width codepoint U+%04x\n", codepoints[i]);
@@ -1234,6 +1243,10 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
     count = CSI_ARG_COUNT(args[0]);
     col = state->pos.col + count;
     UBOUND(col, row_width);
+    /* TermX: with no previous character combine_width is 0 and this loop
+     * never ended */
+    if (state->combine_width <= 0)
+      col = state->pos.col;
     while (state->pos.col < col) {
       putglyph(state, state->combine_chars, state->combine_width, state->pos);
       state->pos.col += state->combine_width;
@@ -1489,8 +1502,10 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
     else
       UBOUND(state->scrollregion_right, state->cols);
 
-    if(state->scrollregion_right > -1 &&
-       state->scrollregion_right <= state->scrollregion_left) {
+    /* TermX: also reject an empty region when the right margin is omitted
+     * (left == cols gave a zero-width region) */
+    if((state->scrollregion_right > -1 ? state->scrollregion_right : state->cols)
+         <= state->scrollregion_left) {
       // Invalid
       state->scrollregion_left  = 0;
       state->scrollregion_right = -1;
@@ -1826,7 +1841,8 @@ static void request_status_string(VTermState *state, VTermStringFragment frag)
   if(!frag.final)
     return;
 
-  switch(tmp[0] | tmp[1]<<8 | tmp[2]<<16) {
+  /* TermX: unsigned, so bytes >= 0x80 are not negative shifts (UB) */
+  switch((unsigned char)tmp[0] | (unsigned char)tmp[1]<<8 | (unsigned char)tmp[2]<<16) {
     case 'm': {
       // Query SGR
       long args[20];
@@ -1983,6 +1999,17 @@ static int on_resize(int rows, int cols, void *user)
     UBOUND(state->scrollregion_bottom, state->rows);
   if(state->scrollregion_right > -1)
     UBOUND(state->scrollregion_right, state->cols);
+  /* TermX: upstream only clamps the bottom/right edges, so a region whose
+   * top/left lies beyond the new size became inverted. Reset it instead. */
+  if(state->scrollregion_top >= SCROLLREGION_BOTTOM(state)) {
+    state->scrollregion_top = 0;
+    state->scrollregion_bottom = -1;
+  }
+  if(state->scrollregion_left >=
+       (state->scrollregion_right > -1 ? state->scrollregion_right : state->cols)) {
+    state->scrollregion_left = 0;
+    state->scrollregion_right = -1;
+  }
 
   VTermStateFields fields = {
     .pos       = state->pos,

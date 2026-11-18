@@ -15,4 +15,14 @@ Local changes (marked `TermX:` in the source), found by fuzzing:
 - `src/screen.c`: resize called `abort()` when it could not place the cursor;
   the cursor is now clamped into the new screen instead.
 
+- `src/state.c`: REP (`CSI n b`) with no previously printed character looped
+  forever (advance width 0). It is now ignored in that case.
+- `src/state.c`: UTF-8 encoded C1 controls (U+0080..U+009F) have width -1 and
+  moved the cursor left of column 0, which then corrupted tab stops, erase and
+  scroll. They now take one cell.
+- `src/state.c`: on resize only the bottom/right scroll margins were clamped,
+  leaving inverted regions; DECSLRM accepted a zero-width region when the right
+  margin was omitted. Both are reset to the full screen now.
+- `src/state.c`: DECRQSS used a signed left shift on bytes >= 0x80 (UB).
+
 Inputs that triggered these are kept in `fuzz/regressions/` and replayed by ctest.

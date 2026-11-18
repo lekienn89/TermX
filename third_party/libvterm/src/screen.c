@@ -186,8 +186,13 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
   if(i < VTERM_MAX_CHARS_PER_CELL)
     cell->chars[i] = 0;
 
-  for(int col = 1; col < info->width; col++)
-    getcell(screen, pos.row, pos.col + col)->chars[0] = (uint32_t)-1;
+  for(int col = 1; col < info->width; col++) {
+    /* TermX: a wide glyph in the last column (or a 1-column screen) has no
+     * cell for its right half */
+    ScreenCell *right = getcell(screen, pos.row, pos.col + col);
+    if(right)
+      right->chars[0] = (uint32_t)-1;
+  }
 
   VTermRect rect = {
     .start_row = pos.row,
