@@ -14,6 +14,6 @@ function(termx_add_fuzzer name)
     target_link_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined)
 endfunction()
 
-termx_add_fuzzer(fuzz_vtscreen)
+termx_add_fuzzer(fuzz_vtscreen)  # regressions: fuzz/regressions/vtscreen
 termx_add_fuzzer(fuzz_telnet)
 termx_add_fuzzer(fuzz_ansistripper)

@@ -7,3 +7,7 @@ Local changes (marked `TermX:` in the source), found by fuzzing:
   wrote past the end of `args[]` (heap overflow). Extra arguments are now dropped.
 - `src/parser.c`: very long numeric CSI arguments and OSC command numbers
   overflowed a signed integer; they are now clamped.
+- `src/screen.c`: reflow on resize walked to row -1 when the first row carried
+  a continuation flag, reading outside the screen buffer. The walk now stops at row 0.
+
+Inputs that triggered these are kept in `fuzz/regressions/` and replayed by ctest.

@@ -34,6 +34,16 @@ endif()
 
 find_package(SQLite3 REQUIRED)
 
+# Sanitizers apply to everything, including vendored libvterm.
+if(TERMX_ASAN)
+    if(MSVC)
+        add_compile_options(/fsanitize=address)
+    else()
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+        add_link_options(-fsanitize=address,undefined)
+    endif()
+endif()
+
 add_subdirectory(third_party/libvterm)
 
 # Common compile settings for TermX's own code.
@@ -55,19 +65,13 @@ if(MSVC)
     if(TERMX_WERROR)
         target_compile_options(termx_options INTERFACE /WX)
     endif()
-    if(TERMX_ASAN)
-        target_compile_options(termx_options INTERFACE /fsanitize=address)
-    endif()
 else()
     target_compile_options(termx_options INTERFACE -Wall -Wextra -Wno-unused-parameter)
     if(TERMX_WERROR)
         target_compile_options(termx_options INTERFACE -Werror)
     endif()
-    if(TERMX_ASAN)
-        target_compile_options(termx_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
-        target_link_options(termx_options INTERFACE -fsanitize=address,undefined)
-    endif()
 endif()
+
 
 add_subdirectory(src/core)
 add_subdirectory(src/app)

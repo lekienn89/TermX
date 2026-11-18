@@ -16,3 +16,10 @@ termx_add_test(tst_ansistripper)
 termx_add_test(tst_sessionconfig)
 termx_add_test(tst_historystore)
 termx_add_test(tst_jsonfile)
+
+# Crash inputs found by fuzzing, replayed through the fuzz harnesses.
+add_executable(tst_fuzz_vtscreen tst_fuzzregressions.cpp ${PROJECT_SOURCE_DIR}/fuzz/fuzz_vtscreen.cpp)
+target_link_libraries(tst_fuzz_vtscreen PRIVATE termx_core Qt6::Test)
+target_include_directories(tst_fuzz_vtscreen PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
+target_compile_definitions(tst_fuzz_vtscreen PRIVATE TERMX_REGRESSION_DIR="${PROJECT_SOURCE_DIR}/fuzz/regressions/vtscreen")
+add_test(NAME tst_fuzz_vtscreen COMMAND tst_fuzz_vtscreen)
