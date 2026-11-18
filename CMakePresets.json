@@ -1,0 +1,33 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows x64 (MSVC + vcpkg)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_PREFIX_PATH": "$env{QTDIR}"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-dev",
+      "displayName": "Linux (system packages, for core development and tests)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-msvc", "configurePreset": "windows-msvc" },
+    { "name": "linux-dev", "configurePreset": "linux-dev" }
+  ],
+  "testPresets": [
+    { "name": "windows-msvc", "configurePreset": "windows-msvc", "output": { "outputOnFailure": true } },
+    { "name": "linux-dev", "configurePreset": "linux-dev", "output": { "outputOnFailure": true } }
+  ]
+}

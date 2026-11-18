@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: '6.8.*'
+  VCPKG_COMMIT: 5d4a3dc90c0b3773f3bac81bf41297b54328f471   # keep in sync with vcpkg.json builtin-baseline
+
+jobs:
+  windows:
+    name: Windows x64 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-2022, windows-2025 ]
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtserialport
+          cache: true
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          git clone --filter=tree:0 https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout $env:VCPKG_COMMIT
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset windows-msvc
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-msvc
+
+      - name: Test
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --preset windows-msvc
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist/TermX"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item build/windows-msvc/src/app/TermX.exe $out/
+          Copy-Item build/windows-msvc/src/app/*.dll $out/ -ErrorAction SilentlyContinue
+          Copy-Item build/windows-msvc/src/app/TermX.pdb $out/ -ErrorAction SilentlyContinue
+          windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw --no-compiler-runtime "$out/TermX.exe"
+          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.txt $out/
+          # Smoke test: the packaged exe must start and stay up.
+          $p = Start-Process -FilePath "$out/TermX.exe" -ArgumentList "--data-dir", "$env:RUNNER_TEMP/termx-smoke" -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "TermX exited early with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          Remove-Item "$out/TermX.pdb" -ErrorAction SilentlyContinue
+
+      - name: Upload build
+        if: matrix.os == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TermX-windows-x64
+          path: dist/TermX
+          retention-days: 14
+
+  linux:
+    name: Linux (core + tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build g++ \
+            qt6-base-dev qt6-base-dev-tools qt6-serialport-dev libssh2-1-dev libsqlite3-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTERMX_WERROR=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+  fuzz:
+    name: Fuzz parsers (short)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build clang-18 libclang-rt-18-dev \
+            qt6-base-dev qt6-serialport-dev libssh2-1-dev libsqlite3-dev
+      - name: Build fuzzers
+        run: |
+          FLAGS="-fsanitize=fuzzer-no-link,address,undefined"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" \
+            -DTERMX_BUILD_FUZZERS=ON -DTERMX_BUILD_TESTS=OFF
+          cmake --build build --target fuzz_vtscreen fuzz_telnet fuzz_ansistripper
+      - name: Run fuzzers
+        run: |
+          for f in fuzz_vtscreen fuzz_telnet fuzz_ansistripper; do
+            mkdir -p corpus/$f
+            build/fuzz/$f corpus/$f -max_total_time=120 -rss_limit_mb=2048 -timeout=10
+          done
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            timeout-*
+            oom-*
