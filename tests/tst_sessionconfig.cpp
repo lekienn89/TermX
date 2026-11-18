@@ -18,7 +18,8 @@ private slots:
         c.ssh.host = QStringLiteral("10.0.0.1");
         c.ssh.port = 2222;
         c.ssh.username = QStringLiteral("admin");
-        c.ssh.allowLegacyAlgorithms = false;
+        c.ssh.allowLegacyAlgorithms = true;
+        c.ssh.hostKeyPolicy = HostKeyPolicy::AcceptNew;
         c.terminal.enterSends = NewlineMode::CRLF;
         const SessionConfig d = SessionConfig::fromJson(c.toJson());
         QCOMPARE(d.id, c.id);
@@ -28,8 +29,20 @@ private slots:
         QCOMPARE(d.ssh.host, c.ssh.host);
         QCOMPARE(d.ssh.port, 2222);
         QCOMPARE(d.ssh.username, c.ssh.username);
-        QCOMPARE(d.ssh.allowLegacyAlgorithms, false);
+        QCOMPARE(d.ssh.allowLegacyAlgorithms, true);
+        QCOMPARE(d.ssh.hostKeyPolicy, HostKeyPolicy::AcceptNew);
         QCOMPARE(d.terminal.enterSends, NewlineMode::CRLF);
+    }
+
+    void secureDefaults()
+    {
+        // Missing keys (hand-written or quick-connect sessions) get the safe defaults.
+        const SessionConfig d = SessionConfig::fromJson(QJsonObject{{QStringLiteral("type"), QStringLiteral("ssh")}});
+        QCOMPARE(d.ssh.allowLegacyAlgorithms, false);
+        QCOMPARE(d.ssh.hostKeyPolicy, HostKeyPolicy::Ask);
+        QCOMPARE(hostKeyPolicyFromName(QStringLiteral("strict")), HostKeyPolicy::Strict);
+        QCOMPARE(hostKeyPolicyName(HostKeyPolicy::Strict), QStringLiteral("strict"));
+        QCOMPARE(hostKeyPolicyFromName(QStringLiteral("bogus")), HostKeyPolicy::Ask);
     }
 
     void serialRoundTrip()

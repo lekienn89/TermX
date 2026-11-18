@@ -12,6 +12,7 @@ class SshTransport : public Transport {
 public:
     SshTransport(const SshOptions &opts, const QString &savedPassword,
                  const QString &knownHostsPath, QObject *parent = nullptr);
+    ~SshTransport() override;
     QString kindName() const override { return QStringLiteral("ssh"); }
 
     static bool globalInit();     // libssh2_init; call once at startup

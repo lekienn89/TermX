@@ -87,6 +87,10 @@ void TerminalSession::createTransport()
         Q_EMIT notice(n);
     });
     connect(t, &Transport::secretAccepted, this, &TerminalSession::secretAccepted);
+    connect(t, &Transport::legacyAlgorithmsAccepted, this, [this] {
+        m_cfg.ssh.allowLegacyAlgorithms = true;
+        Q_EMIT legacyAlgorithmsAccepted();
+    });
 }
 
 void TerminalSession::start()
@@ -384,6 +388,7 @@ void TerminalSession::sendCommand(const QString &command, bool execute)
 bool TerminalSession::startLog(const QString &path, QString *error)
 {
     const QString dir = m_cfg.logDirectory.isEmpty() ? AppPaths::logsDir() : m_cfg.logDirectory;
+    m_logger.setTimestamps(m_cfg.logTimestamps);
     return m_logger.start(path.isEmpty() ? SessionLogger::defaultPath(dir, m_cfg.displayName()) : path, error);
 }
 

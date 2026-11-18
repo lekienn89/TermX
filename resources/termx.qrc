@@ -1,0 +1,12 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefix="/icons">
+    <file alias="termx.svg">icons/termx.svg</file>
+    <file alias="termx-16.png">icons/png/termx-16.png</file>
+    <file alias="termx-24.png">icons/png/termx-24.png</file>
+    <file alias="termx-32.png">icons/png/termx-32.png</file>
+    <file alias="termx-48.png">icons/png/termx-48.png</file>
+    <file alias="termx-64.png">icons/png/termx-64.png</file>
+    <file alias="termx-128.png">icons/png/termx-128.png</file>
+    <file alias="termx-256.png">icons/png/termx-256.png</file>
+</qresource>
+</RCC>

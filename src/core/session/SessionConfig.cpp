@@ -5,6 +5,25 @@
 
 namespace termx {
 
+QString hostKeyPolicyName(HostKeyPolicy p)
+{
+    switch (p) {
+    case HostKeyPolicy::AcceptNew: return QStringLiteral("accept-new");
+    case HostKeyPolicy::Strict: return QStringLiteral("strict");
+    case HostKeyPolicy::Ask: break;
+    }
+    return QStringLiteral("ask");
+}
+
+HostKeyPolicy hostKeyPolicyFromName(const QString &name)
+{
+    if (name == QLatin1String("accept-new"))
+        return HostKeyPolicy::AcceptNew;
+    if (name == QLatin1String("strict"))
+        return HostKeyPolicy::Strict;
+    return HostKeyPolicy::Ask;
+}
+
 QString sessionTypeName(SessionType t)
 {
     switch (t) {
@@ -63,6 +82,7 @@ QJsonObject SessionConfig::toJson() const
     o[QStringLiteral("history")] = historyEnabled;
     o[QStringLiteral("log")] = logEnabled;
     o[QStringLiteral("logDir")] = logDirectory;
+    o[QStringLiteral("logTimestamps")] = logTimestamps;
     o[QStringLiteral("password")] = encryptedPassword;
     o[QStringLiteral("notes")] = notes;
 
@@ -73,6 +93,7 @@ QJsonObject SessionConfig::toJson() const
     s[QStringLiteral("keyFile")] = ssh.keyFile;
     s[QStringLiteral("agent")] = ssh.useAgent;
     s[QStringLiteral("legacy")] = ssh.allowLegacyAlgorithms;
+    s[QStringLiteral("hostKeyPolicy")] = hostKeyPolicyName(ssh.hostKeyPolicy);
     s[QStringLiteral("keepAlive")] = ssh.keepAliveSeconds;
     s[QStringLiteral("timeout")] = ssh.connectTimeoutSeconds;
     s[QStringLiteral("term")] = ssh.termType;
@@ -125,6 +146,7 @@ SessionConfig SessionConfig::fromJson(const QJsonObject &o)
     c.historyEnabled = o.value(QStringLiteral("history")).toBool(true);
     c.logEnabled = o.value(QStringLiteral("log")).toBool(false);
     c.logDirectory = o.value(QStringLiteral("logDir")).toString();
+    c.logTimestamps = o.value(QStringLiteral("logTimestamps")).toBool(true);
     c.encryptedPassword = o.value(QStringLiteral("password")).toString();
     c.notes = o.value(QStringLiteral("notes")).toString();
 
@@ -134,7 +156,8 @@ SessionConfig SessionConfig::fromJson(const QJsonObject &o)
     c.ssh.username = s.value(QStringLiteral("user")).toString();
     c.ssh.keyFile = s.value(QStringLiteral("keyFile")).toString();
     c.ssh.useAgent = s.value(QStringLiteral("agent")).toBool(true);
-    c.ssh.allowLegacyAlgorithms = s.value(QStringLiteral("legacy")).toBool(true);
+    c.ssh.allowLegacyAlgorithms = s.value(QStringLiteral("legacy")).toBool(false);
+    c.ssh.hostKeyPolicy = hostKeyPolicyFromName(s.value(QStringLiteral("hostKeyPolicy")).toString());
     c.ssh.keepAliveSeconds = clampInt(s.value(QStringLiteral("keepAlive")), 30, 0, 3600);
     c.ssh.connectTimeoutSeconds = clampInt(s.value(QStringLiteral("timeout")), 15, 1, 300);
     c.ssh.termType = s.value(QStringLiteral("term")).toString(QStringLiteral("xterm-256color"));

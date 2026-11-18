@@ -54,5 +54,6 @@ QString AppPaths::historyDb() { return dataDir() + QStringLiteral("/history.sqli
 QString AppPaths::knownHostsFile() { return dataDir() + QStringLiteral("/known_hosts"); }
 QString AppPaths::settingsFile() { return dataDir() + QStringLiteral("/settings.ini"); }
 QString AppPaths::stateFile() { return dataDir() + QStringLiteral("/state.json"); }
+QString AppPaths::snippetsFile() { return dataDir() + QStringLiteral("/snippets.json"); }
 
 } // namespace termx

@@ -2,6 +2,7 @@
 #include "CrashHandler.h"
 #include "MainWindow.h"
 #include "Theme.h"
+#include "session/QuickConnect.h"
 #include "session/SessionConfig.h"
 #include "transport/SshTransport.h"
 #include "transport/Transport.h"
@@ -10,20 +11,37 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDesktopServices>
+#include <QIcon>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QTimer>
+#include <QTranslator>
 #include <QUrl>
 #include <QUrlQuery>
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 
 using namespace termx;
 
 namespace {
+
+// The UI is English only; this gives tr("%n item(s)", nullptr, n) proper
+// English plurals without shipping a .qm file.
+class EnglishPlurals : public QTranslator {
+public:
+    using QTranslator::QTranslator;
+    bool isEmpty() const override { return false; }
+    QString translate(const char *, const char *source, const char *, int n) const override
+    {
+        if (n < 0 || !source || !std::strstr(source, "(s)"))
+            return QString();
+        return QString::fromUtf8(source).replace(QStringLiteral("(s)"), n == 1 ? QString() : QStringLiteral("s"));
+    }
+};
 
 // Detects repeated crashes during start-up and offers a safe mode that does
 // not reopen the previous tabs.
@@ -51,39 +69,14 @@ private:
     int m_failures = 0;
 };
 
-// termx local  ssh://user@host:22  telnet://host:23  serial://COM7?baud=115200  or  user@host
+// Positional arguments use the Quick Connect syntax, e.g.
+//   TermX.exe admin@10.0.0.1   "telnet 10.0.0.1 2001"   COM7:115200   serial://COM7?baud=9600   local
 bool sessionFromArgument(const QString &arg, SessionConfig &c)
 {
-    if (arg.compare(QLatin1String("local"), Qt::CaseInsensitive) == 0) {
-        c.type = SessionType::LocalShell;
+    QString err;
+    if (QuickConnect::parse(arg, c, &err))
         return true;
-    }
-    QUrl url(arg.contains(QStringLiteral("://")) ? arg : QStringLiteral("ssh://") + arg);
-    if (!url.isValid())
-        return false;
-    const QString scheme = url.scheme().toLower();
-    if (scheme == QLatin1String("ssh")) {
-        c.type = SessionType::Ssh;
-        c.ssh.host = url.host();
-        c.ssh.port = url.port(22);
-        c.ssh.username = url.userName();
-        return !c.ssh.host.isEmpty();
-    }
-    if (scheme == QLatin1String("telnet") || scheme == QLatin1String("raw")) {
-        c.type = SessionType::Telnet;
-        c.telnet.host = url.host();
-        c.telnet.port = url.port(23);
-        c.telnet.rawTcp = scheme == QLatin1String("raw");
-        return !c.telnet.host.isEmpty();
-    }
-    if (scheme == QLatin1String("serial")) {
-        c.type = SessionType::Serial;
-        c.serial.portName = url.host().isEmpty() ? url.path().remove(QLatin1Char('/')) : url.host().toUpper();
-        const QUrlQuery q(url);
-        if (q.hasQueryItem(QStringLiteral("baud")))
-            c.serial.baudRate = qMax(50, q.queryItemValue(QStringLiteral("baud")).toInt());
-        return !c.serial.portName.isEmpty();
-    }
+    std::fprintf(stderr, "TermX: ignoring '%s': %s\n", qPrintable(arg), qPrintable(err));
     return false;
 }
 
@@ -93,9 +86,17 @@ int main(int argc, char *argv[])
 {
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     QApplication app(argc, argv);
+    EnglishPlurals plurals;
+    QApplication::installTranslator(&plurals);
     QApplication::setApplicationName(QStringLiteral("TermX"));
     QApplication::setOrganizationName(QStringLiteral("TermX"));
     QApplication::setApplicationVersion(QStringLiteral(TERMX_VERSION));
+    {
+        QIcon icon;
+        for (int size : {16, 24, 32, 48, 64, 128, 256})
+            icon.addFile(QStringLiteral(":/icons/termx-%1.png").arg(size), QSize(size, size));
+        QApplication::setWindowIcon(icon);
+    }
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("TermX terminal"));
@@ -116,6 +117,7 @@ int main(int argc, char *argv[])
 
     QSettings settings(AppPaths::settingsFile(), QSettings::IniFormat);
     Theme::setTerminalFontSize(settings.value(QStringLiteral("ui/fontSize"), 11.0).toDouble());
+    Theme::loadPrefs(settings);
     Theme::apply(Theme::modeFromName(settings.value(QStringLiteral("ui/theme"), QStringLiteral("system")).toString()));
 
     StartupGuard guard(settings);

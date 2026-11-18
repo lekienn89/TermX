@@ -3,6 +3,12 @@
 
 #include "Panels.h"
 #include "PromptDialog.h"
+#include "PreferencesDialog.h"
+#include "QuickConnectBar.h"
+#include "session/SessionImport.h"
+#include "CommandPalette.h"
+#include "SnippetPanel.h"
+#include "session/SnippetStore.h"
 #include "SessionDialog.h"
 #include "TabPage.h"
 #include "TerminalView.h"
@@ -10,6 +16,7 @@
 #include "Theme.h"
 #include "history/HistoryStore.h"
 #include "session/CredentialStore.h"
+#include "session/QuickConnect.h"
 #include "session/SessionStore.h"
 #include "terminal/TerminalSession.h"
 #include "util/AppPaths.h"
@@ -31,6 +38,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabBar>
@@ -38,6 +46,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
+#include <QVBoxLayout>
 
 #include <libssh2.h>
 
@@ -74,7 +83,32 @@ MainWindow::MainWindow(bool safeMode, QWidget *parent)
     newTab->setToolTip(tr("New session (Ctrl+Shift+N)"));
     m_tabs->setCornerWidget(newTab, Qt::TopRightCorner);
     connect(newTab, &QToolButton::clicked, this, &MainWindow::quickConnect);
-    setCentralWidget(m_tabs);
+
+    m_quickBar = new QuickConnectBar(this);
+    m_quickBar->setObjectName(QStringLiteral("quickConnectBar"));
+    m_quickBar->setAttribute(Qt::WA_StyledBackground, true);
+    m_quickBar->setRecent(m_settings->value(QStringLiteral("quickConnect/recent")).toStringList());
+    m_quickBar->setVisible(m_settings->value(QStringLiteral("quickConnect/visible"), true).toBool());
+    connect(m_quickBar, &QuickConnectBar::connectRequested, this, [this](const SessionConfig &c) {
+        m_settings->setValue(QStringLiteral("quickConnect/recent"), m_quickBar->recent());
+        openSession(c);
+    });
+    connect(m_quickBar, &QuickConnectBar::savedSessionRequested, this, [this](const QString &id) { openSavedSession(id); });
+    connect(m_quickBar, &QuickConnectBar::moreRequested, this, &MainWindow::quickConnect);
+    connect(m_quickBar, &QuickConnectBar::done, this, [this] {
+        if (TerminalView *v = currentView())
+            v->focusTerminal();
+    });
+    connect(m_sessions, &SessionStore::changed, this, &MainWindow::refreshQuickBar);
+    refreshQuickBar();
+
+    auto *central = new QWidget(this);
+    auto *cl = new QVBoxLayout(central);
+    cl->setContentsMargins(0, 0, 0, 0);
+    cl->setSpacing(0);
+    cl->addWidget(m_quickBar);
+    cl->addWidget(m_tabs, 1);
+    setCentralWidget(central);
 
     m_toast = new Toast(m_tabs);
 
@@ -112,11 +146,22 @@ MainWindow::MainWindow(bool safeMode, QWidget *parent)
     });
 
     createDocks();
+    m_palette = new CommandPalette(this);
+    connect(m_palette, &CommandPalette::closed, this, [this] {
+        QWidget *f = QApplication::focusWidget();
+        if (!f || f == this || m_palette->isAncestorOf(f))
+            if (TerminalView *v = currentView())
+                v->focusTerminal();
+    });
     createActions();
 
     m_statusState = new QLabel(this);
     m_statusSize = new QLabel(this);
     m_statusLog = new QLabel(this);
+    m_statusBroadcast = new QLabel(this);
+    m_statusBroadcast->setObjectName(QStringLiteral("broadcastBadge"));
+    m_statusBroadcast->hide();
+    statusBar()->addPermanentWidget(m_statusBroadcast);
     statusBar()->addWidget(m_statusState, 1);
     statusBar()->addPermanentWidget(m_statusLog);
     statusBar()->addPermanentWidget(m_statusSize);
@@ -170,6 +215,18 @@ void MainWindow::createDocks()
     addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
     m_historyDock->hide();
 
+    m_snippets = new SnippetStore(AppPaths::snippetsFile(), this);
+    m_snippets->load();
+    m_snippetPanel = new SnippetPanel(m_snippets, this);
+    m_snippetDock = new QDockWidget(tr("Snippets"), this);
+    m_snippetDock->setObjectName(QStringLiteral("dock.snippets"));
+    m_snippetDock->setWidget(m_snippetPanel);
+    addDockWidget(Qt::RightDockWidgetArea, m_snippetDock);
+    tabifyDockWidget(m_historyDock, m_snippetDock);
+    m_snippetDock->hide();
+    connect(m_snippetPanel, &SnippetPanel::runRequested, this, [this](const QString &t) { runSnippetText(t, true); });
+    connect(m_snippetPanel, &SnippetPanel::pasteRequested, this, [this](const QString &t) { runSnippetText(t, false); });
+
     connect(m_sessionPanel, &SessionTreePanel::openRequested, this, [this](const QString &id) { openSavedSession(id); });
     connect(m_sessionPanel, &SessionTreePanel::editRequested, this, [this](const QString &id) {
         if (const SessionConfig *c = m_sessions->find(id))
@@ -206,11 +263,14 @@ void MainWindow::createActions()
         a->setShortcutContext(Qt::WindowShortcut);
         connect(a, &QAction::triggered, this, slot);
         addAction(a);
+        registerShortcut(a, menu->title());
         return a;
     };
 
     QMenu *file = menuBar()->addMenu(tr("&File"));
     add(file, tr("New Session..."), QStringLiteral("Ctrl+Shift+N"), [this] { quickConnect(); });
+    add(file, tr("Quick Connect"), QStringLiteral("Ctrl+Shift+K"), [this] { focusQuickBar(); });
+    add(file, tr("Command Palette..."), QStringLiteral("Ctrl+Shift+P"), [this] { showCommandPalette(); });
     add(file, tr("New Local Shell"), QStringLiteral("Ctrl+Shift+T"), [this] { newLocalShell(); });
     add(file, tr("Duplicate Tab"), QString(), [this] {
         if (TerminalSession *s = currentSession())
@@ -222,6 +282,38 @@ void MainWindow::createActions()
             closeView(v);
     });
     file->addSeparator();
+    QMenu *imp = file->addMenu(tr("Import Sessions"));
+#ifdef Q_OS_WIN
+    add(imp, tr("From PuTTY"), QString(), [this] { importSessions(SessionImport::readPuttyRegistry(), tr("PuTTY")); });
+#endif
+    add(imp, tr("From PuTTY .reg Export..."), QString(), [this] {
+        const QString path = QFileDialog::getOpenFileName(this, tr("Import PuTTY sessions"), QString(),
+                                                          tr("Registry files (*.reg);;All files (*)"));
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, tr("Import"), tr("Cannot read %1: %2").arg(path, f.errorString()));
+            return;
+        }
+        importSessions(SessionImport::parsePuttyReg(f.read(16 * 1024 * 1024)), tr("PuTTY"));
+    });
+    add(imp, tr("From OpenSSH Config..."), QString(), [this] {
+        const QString home = QDir::homePath();
+        const QString def = home + QStringLiteral("/.ssh/config");
+        const QString path = QFileDialog::getOpenFileName(this, tr("Import OpenSSH config"),
+                                                          QFile::exists(def) ? def : home + QStringLiteral("/.ssh"),
+                                                          tr("All files (*)"));
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QMessageBox::warning(this, tr("Import"), tr("Cannot read %1: %2").arg(path, f.errorString()));
+            return;
+        }
+        importSessions(SessionImport::parseOpenSshConfig(QString::fromUtf8(f.read(4 * 1024 * 1024)), home), tr("OpenSSH config"));
+    });
+    add(file, tr("Preferences..."), QStringLiteral("Ctrl+,"), [this] { showPreferences(); });
     add(file, tr("Open Data Folder"), QString(), [] {
         QDesktopServices::openUrl(QUrl::fromLocalFile(AppPaths::dataDir()));
     });
@@ -246,6 +338,10 @@ void MainWindow::createActions()
         if (TerminalView *v = currentView())
             v->showFindBar();
     });
+    add(edit, tr("Save Selection as Snippet..."), QString(), [this] {
+        TerminalView *v = currentView();
+        m_snippetPanel->addSnippet(v ? v->terminal()->selectedText() : QString());
+    });
     add(edit, tr("Clear Scrollback"), QString(), [this] {
         if (TerminalView *v = currentView()) {
             v->session()->screen().clearScrollback();
@@ -254,14 +350,34 @@ void MainWindow::createActions()
     });
 
     QMenu *view = menuBar()->addMenu(tr("&View"));
+    QAction *qcb = m_actQuickBar = view->addAction(tr("Quick Connect Bar"));
+    qcb->setCheckable(true);
+    qcb->setChecked(!m_quickBar->isHidden());
+    addAction(qcb);
+    registerShortcut(qcb, view->title());
+    connect(qcb, &QAction::toggled, this, [this](bool on) {
+        m_quickBar->setVisible(on);
+        m_settings->setValue(QStringLiteral("quickConnect/visible"), on);
+    });
     view->addAction(m_sessionDock->toggleViewAction());
     view->addAction(m_serialDock->toggleViewAction());
     QAction *hist = m_historyDock->toggleViewAction();
     hist->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+H")));
     view->addAction(hist);
+    addAction(hist);
+    registerShortcut(hist, view->title());
     connect(hist, &QAction::toggled, this, [this](bool on) {
         if (on)
             QTimer::singleShot(0, m_historyPanel, &HistoryPanel::focusSearch);
+    });
+    QAction *snip = m_snippetDock->toggleViewAction();
+    snip->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
+    view->addAction(snip);
+    addAction(snip);
+    registerShortcut(snip, view->title());
+    connect(snip, &QAction::toggled, this, [this](bool on) {
+        if (on)
+            QTimer::singleShot(0, m_snippetPanel, &SnippetPanel::focusFilter);
     });
     view->addSeparator();
     QMenu *theme = view->addMenu(tr("Theme"));
@@ -274,6 +390,7 @@ void MainWindow::createActions()
         a->setChecked(i == current);
         group->addAction(a);
         connect(a, &QAction::triggered, this, [this, i] { setThemeMode(i); });
+        m_themeActions << a;
     }
     add(view, tr("Zoom In"), QStringLiteral("Ctrl+Alt+="), [this] { zoom(1); });
     add(view, tr("Zoom Out"), QStringLiteral("Ctrl+Alt+-"), [this] { zoom(-1); });
@@ -291,6 +408,21 @@ void MainWindow::createActions()
     m_actBreak = add(session, tr("Send Break"), QStringLiteral("Ctrl+Shift+B"), [this] {
         if (TerminalSession *s = currentSession())
             s->sendBreak();
+    });
+    session->addSeparator();
+    QMenu *bc = session->addMenu(tr("Broadcast Input"));
+    auto *bcGroup = new QActionGroup(this);
+    const QStringList bcNames = {tr("Off"), tr("To All Panes in This Tab"), tr("To All Tabs")};
+    for (int i = 0; i < 3; ++i) {
+        QAction *a = bc->addAction(bcNames[i]);
+        a->setCheckable(true);
+        a->setChecked(i == 0);
+        bcGroup->addAction(a);
+        connect(a, &QAction::triggered, this, [this, i] { setBroadcastMode(i); });
+        m_broadcastActions << a;
+    }
+    add(session, tr("Toggle Broadcast to This Tab"), QStringLiteral("Ctrl+Shift+I"), [this] {
+        setBroadcastMode(m_broadcastMode == 0 ? 1 : 0);
     });
     session->addSeparator();
     add(session, tr("Split Right"), QStringLiteral("Ctrl+Shift+D"), [this] { splitCurrent(Qt::Horizontal); });
@@ -329,33 +461,176 @@ void MainWindow::createActions()
     });
 
     // Tab navigation.
-    auto *next = new QAction(this);
+    auto *next = new QAction(tr("Next Tab"), this);
     next->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Tab")), QKeySequence(QStringLiteral("Ctrl+PgDown"))});
     connect(next, &QAction::triggered, this, [this] {
         if (m_tabs->count() > 1)
             m_tabs->setCurrentIndex((m_tabs->currentIndex() + 1) % m_tabs->count());
     });
     addAction(next);
-    auto *prev = new QAction(this);
+    registerShortcut(next, tr("Tabs"));
+    auto *prev = new QAction(tr("Previous Tab"), this);
     prev->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Shift+Tab")), QKeySequence(QStringLiteral("Ctrl+PgUp"))});
     connect(prev, &QAction::triggered, this, [this] {
         if (m_tabs->count() > 1)
             m_tabs->setCurrentIndex((m_tabs->currentIndex() + m_tabs->count() - 1) % m_tabs->count());
     });
     addAction(prev);
+    registerShortcut(prev, tr("Tabs"));
 
     QMenu *help = menuBar()->addMenu(tr("&Help"));
-    add(help, tr("Keyboard Shortcuts"), QString(), [this] {
-        QMessageBox::information(this, tr("Keyboard shortcuts"),
-            tr("Ctrl+Shift+N  New session\nCtrl+Shift+T  New local shell\nCtrl+Shift+W  Close pane\n"
-               "Ctrl+Shift+C / V  Copy / Paste (also Ctrl+Insert / Shift+Insert)\n"
-               "Ctrl+Shift+F  Find in scrollback\nCtrl+Shift+H  History panel\n"
-               "Ctrl+Shift+D / E  Split right / down\nCtrl+Shift+R  Reconnect\nCtrl+Shift+B  Send Break\n"
-               "Ctrl+Shift+L  Log to file\nCtrl+Tab  Next tab\nShift+PgUp / PgDn  Scroll\n"
-               "Ctrl+Alt+= / -  Zoom\n\nSuggestions while typing: Right or End accepts,\n"
-               "Alt+Up / Alt+Down choose, Esc hides.\nSelecting text copies it; middle-click pastes."));
-    });
+    add(help, tr("Keyboard Shortcuts"), QString(), [this] { showShortcutHelp(); });
     add(help, tr("About TermX"), QString(), [this] { showAbout(); });
+
+    applyShortcutOverrides();
+}
+
+void MainWindow::registerShortcut(QAction *a, const QString &menuTitle)
+{
+    QString menu = menuTitle;
+    menu.remove(QLatin1Char('&'));
+    QString text = a->text();
+    text.remove(QLatin1Char('&'));
+    text.remove(QStringLiteral("..."));
+    QString id = menu + QLatin1Char('.');
+    for (const QChar c : text)
+        if (c.isLetterOrNumber())
+            id += c;
+    a->setObjectName(id);
+    a->setProperty("shortcutId", id);
+    a->setProperty("menuPath", QStringLiteral("%1 › %2").arg(menu, text.trimmed()));
+    a->setProperty("defaultShortcuts", QKeySequence::listToString(a->shortcuts(), QKeySequence::PortableText));
+    m_shortcutActions << a;
+}
+
+void MainWindow::applyShortcutOverrides()
+{
+    m_settings->beginGroup(QStringLiteral("shortcuts"));
+    QList<QKeySequence> all;
+    for (QAction *a : std::as_const(m_shortcutActions)) {
+        const QString id = a->property("shortcutId").toString();
+        const QString value = m_settings->contains(id) ? m_settings->value(id).toString()
+                                                       : a->property("defaultShortcuts").toString();
+        a->setShortcuts(QKeySequence::listFromString(value, QKeySequence::PortableText));
+        all += a->shortcuts();
+    }
+    m_settings->endGroup();
+    TerminalWidget::setAppShortcuts(all);
+}
+
+void MainWindow::showPreferences(bool keyboardPage)
+{
+    PreferencesDialog dlg(m_shortcutActions, this);
+    if (keyboardPage)
+        dlg.showKeyboardPage();
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    Theme::prefs() = dlg.prefs();
+    Theme::savePrefs(*m_settings);
+    Theme::setTerminalFontSize(dlg.fontSize());
+    m_settings->setValue(QStringLiteral("ui/fontSize"), Theme::terminalFontSize());
+
+    const QHash<QString, QList<QKeySequence>> keys = dlg.shortcuts();
+    m_settings->beginGroup(QStringLiteral("shortcuts"));
+    for (QAction *a : std::as_const(m_shortcutActions)) {
+        const QString id = a->property("shortcutId").toString();
+        const QString value = QKeySequence::listToString(keys.value(id), QKeySequence::PortableText);
+        if (value == a->property("defaultShortcuts").toString())
+            m_settings->remove(id);
+        else
+            m_settings->setValue(id, value);
+    }
+    m_settings->endGroup();
+    applyShortcutOverrides();
+
+    // setThemeMode re-applies appearance to every terminal.
+    setThemeMode(dlg.themeMode());
+}
+
+void MainWindow::importSessions(const SessionImport::Result &r, const QString &source)
+{
+    QSet<QString> existing;
+    for (const SessionConfig &c : m_sessions->sessions())
+        existing.insert(c.folder + QLatin1Char('/') + c.name);
+    QList<SessionConfig> fresh;
+    int duplicates = 0;
+    for (const SessionConfig &c : r.sessions) {
+        const QString key = c.folder + QLatin1Char('/') + c.name;
+        if (existing.contains(key)) {
+            ++duplicates;
+            continue;
+        }
+        existing.insert(key);
+        fresh << c;
+    }
+
+    QString text;
+    if (fresh.isEmpty())
+        text = r.sessions.isEmpty() ? tr("No sessions were found in %1.").arg(source)
+                                    : tr("All %n session(s) from %1 are already imported.", nullptr, int(r.sessions.size())).arg(source);
+    else
+        text = tr("Import %n session(s) from %1 into the \"%2\" folder?", nullptr, int(fresh.size()))
+                   .arg(source, fresh.first().folder);
+    QMessageBox box(fresh.isEmpty() ? QMessageBox::Information : QMessageBox::Question, tr("Import sessions"), text,
+                    QMessageBox::NoButton, this);
+    QStringList info;
+    for (int i = 0; i < fresh.size() && i < 8; ++i)
+        info << QStringLiteral("\u2022 %1  (%2)").arg(fresh[i].name, fresh[i].target());
+    if (fresh.size() > 8)
+        info << tr("and %n more", nullptr, int(fresh.size() - 8));
+    if (duplicates > 0 && !fresh.isEmpty())
+        info << tr("%n already imported, skipped.", nullptr, duplicates);
+    box.setInformativeText(info.join(QLatin1Char('\n')));
+    if (!r.warnings.isEmpty())
+        box.setDetailedText(r.warnings.join(QLatin1Char('\n')));
+    QPushButton *ok = nullptr;
+    if (fresh.isEmpty()) {
+        box.addButton(QMessageBox::Ok);
+    } else {
+        ok = box.addButton(tr("Import"), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(ok);
+    }
+    box.exec();
+    if (!ok || box.clickedButton() != ok)
+        return;
+    for (const SessionConfig &c : std::as_const(fresh))
+        m_sessions->upsert(c);
+    m_sessionDock->show();
+    m_toast->showMessage(tr("Imported %n session(s)", nullptr, int(fresh.size())), fresh.first().folder, {}, 4000);
+}
+
+void MainWindow::showShortcutHelp()
+{
+    QString html = QStringLiteral("<table cellspacing='0' cellpadding='3'>");
+    QString lastMenu;
+    for (QAction *a : std::as_const(m_shortcutActions)) {
+        if (a->shortcuts().isEmpty())
+            continue;
+        const QString path = a->property("menuPath").toString();
+        const QString menu = path.section(QStringLiteral(" › "), 0, 0);
+        if (menu != lastMenu) {
+            html += QStringLiteral("<tr><td colspan='2'><b>%1</b></td></tr>").arg(menu.toHtmlEscaped());
+            lastMenu = menu;
+        }
+        QStringList keys;
+        for (const QKeySequence &k : a->shortcuts())
+            keys << k.toString(QKeySequence::NativeText);
+        html += QStringLiteral("<tr><td style='padding-right:24px'>%1</td><td><code>%2</code></td></tr>")
+                    .arg(path.section(QStringLiteral(" › "), 1).toHtmlEscaped(), keys.join(QStringLiteral(", ")).toHtmlEscaped());
+    }
+    html += QStringLiteral("</table><p><b>%1</b><br>%2</p>")
+                .arg(tr("In the terminal").toHtmlEscaped(),
+                     tr("Ctrl+Insert / Shift+Insert copy and paste. Shift+PgUp / PgDn scroll.<br>"
+                        "Suggestions while typing: Right or End accepts, Alt+Up / Alt+Down choose, Esc hides.<br>"
+                        "Selecting text copies it (can be turned off); middle-click pastes."));
+    QMessageBox box(QMessageBox::NoIcon, tr("Keyboard shortcuts"), html, QMessageBox::Close, this);
+    box.setTextFormat(Qt::RichText);
+    QPushButton *customize = box.addButton(tr("Customize..."), QMessageBox::ActionRole);
+    box.exec();
+    if (box.clickedButton() == customize)
+        showPreferences(true);
 }
 
 // ---------------------------------------------------------------- sessions
@@ -420,6 +695,14 @@ void MainWindow::wireSession(TerminalView *view)
     });
     connect(s, &TerminalSession::titleChanged, this, [this, view] { updateTabFor(view); });
     connect(s, &TerminalSession::promptRequested, this, [this, s](const PromptRequest &req) { showPrompt(s, req); });
+    connect(s, &TerminalSession::legacyAlgorithmsAccepted, this, [this, s] {
+        const QString id = s->config().id;
+        if (const SessionConfig *saved = id.isEmpty() ? nullptr : m_sessions->find(id)) {
+            SessionConfig c = *saved;
+            c.ssh.allowLegacyAlgorithms = true;
+            m_sessions->upsert(c);
+        }
+    });
     connect(s, &TerminalSession::secretAccepted, this, [this, s](const QString &secret) {
         const QString id = s->config().id;
         if (id.isEmpty() || !CredentialStore::isAvailable())
@@ -439,6 +722,8 @@ void MainWindow::wireSession(TerminalView *view)
         if (!isActiveWindow())
             QApplication::alert(this, 1500);
     });
+    view->terminal()->setBroadcastTargets([this, view] { return broadcastTargetsFor(view); });
+    view->terminal()->setBroadcastHighlight(m_broadcastMode != 0);
     connect(view->terminal(), &TerminalWidget::gridSizeChanged, this, [this, view] {
         if (view == currentView())
             updateStatus();
@@ -494,6 +779,114 @@ void MainWindow::quickConnect()
 {
     SessionConfig c;
     showSessionDialog(c, false);
+}
+
+void MainWindow::refreshQuickBar()
+{
+    QList<QPair<QString, QString>> items;
+    for (const SessionConfig &c : m_sessions->sessions())
+        items.append({c.displayName(), c.id});
+    m_quickBar->setSavedSessions(items);
+}
+
+void MainWindow::focusQuickBar()
+{
+    if (m_quickBar->isHidden())
+        m_actQuickBar->setChecked(true);   // shows the bar and remembers it
+    m_quickBar->focusInput();
+}
+
+void MainWindow::setBroadcastMode(int mode)
+{
+    m_broadcastMode = std::clamp(mode, 0, 2);
+    if (m_broadcastMode < m_broadcastActions.size())
+        m_broadcastActions[m_broadcastMode]->setChecked(true);
+    for (TerminalView *v : allViews())
+        v->terminal()->setBroadcastHighlight(m_broadcastMode != 0);
+    m_statusBroadcast->setText(m_broadcastMode == 1 ? tr("BROADCAST: this tab") : tr("BROADCAST: all tabs"));
+    m_statusBroadcast->setVisible(m_broadcastMode != 0);
+    if (m_broadcastMode != 0)
+        m_toast->showMessage(tr("Broadcast input is on"),
+                             m_broadcastMode == 1 ? tr("Typing goes to every pane in the current tab.")
+                                                  : tr("Typing goes to every open session."),
+                             {{tr("Turn Off"), [this] { setBroadcastMode(0); }}}, 5000);
+}
+
+QList<TerminalSession *> MainWindow::broadcastTargetsFor(TerminalView *view) const
+{
+    QList<TerminalSession *> out;
+    if (m_broadcastMode == 0 || m_quitting)
+        return out;
+    QList<TerminalView *> views;
+    if (m_broadcastMode == 2) {
+        views = allViews();
+    } else {
+        for (int i = 0; i < m_tabs->count(); ++i)
+            if (auto *p = qobject_cast<TabPage *>(m_tabs->widget(i)))
+                if (p->views().contains(view))
+                    views = p->views();
+    }
+    for (TerminalView *v : views)
+        if (v != view && v->session()->state() == TransportState::Connected)
+            out << v->session();
+    return out;
+}
+
+void MainWindow::runSnippetText(const QString &textIn, bool pressEnter)
+{
+    TerminalView *v = currentView();
+    if (!v || v->session()->state() != TransportState::Connected) {
+        QApplication::beep();
+        return;
+    }
+    QString text = textIn;
+    while (text.endsWith(QLatin1Char('\n')) || text.endsWith(QLatin1Char('\r')))
+        text.chop(1);
+    v->terminal()->typeText(pressEnter ? text + QLatin1Char('\n') : text);
+    v->focusTerminal();
+}
+
+void MainWindow::showCommandPalette()
+{
+    QList<CommandPalette::Item> items;
+    std::function<void(QMenu *, const QString &)> walk = [&](QMenu *menu, const QString &prefix) {
+        for (QAction *a : menu->actions()) {
+            if (a->isSeparator())
+                continue;
+            const QString text = QString(a->text()).remove(QLatin1Char('&')).remove(QStringLiteral("..."));
+            if (a->menu()) {
+                walk(a->menu(), prefix + text + QStringLiteral(" › "));
+                continue;
+            }
+            if (!a->isEnabled() || text == QLatin1String("Command Palette"))
+                continue;
+            QPointer<QAction> act(a);
+            items.append({prefix + text, a->shortcut().toString(QKeySequence::NativeText), QStringLiteral("Command"),
+                          [act] {
+                              if (act)
+                                  act->trigger();
+                          }});
+        }
+    };
+    for (QAction *a : menuBar()->actions())
+        if (a->menu())
+            walk(a->menu(), QString(a->text()).remove(QLatin1Char('&')) + QStringLiteral(" › "));
+    for (const SessionConfig &c : m_sessions->sessions()) {
+        const QString id = c.id;
+        items.append({c.displayName(), c.target(), tr("Connect"), [this, id] { openSavedSession(id); }});
+    }
+    for (const Snippet &s : m_snippets->snippets()) {
+        const QString text = s.text;
+        items.append({s.name, s.group, tr("Snippet"), [this, text] { runSnippetText(text, true); }});
+    }
+    for (const QString &r : m_quickBar->recent()) {
+        items.append({r, QString(), tr("Recent"), [this, r] {
+                          SessionConfig c;
+                          if (QuickConnect::parse(r, c))
+                              openSession(c);
+                      }});
+    }
+    m_palette->popup(items);
 }
 
 void MainWindow::newLocalShell()
@@ -751,6 +1144,8 @@ void MainWindow::setThemeMode(int mode)
 {
     Theme::apply(Theme::Mode(mode));
     m_settings->setValue(QStringLiteral("ui/theme"), Theme::modeName(Theme::Mode(mode)));
+    if (mode >= 0 && mode < m_themeActions.size())
+        m_themeActions[mode]->setChecked(true);
     for (TerminalView *v : allViews())
         v->terminal()->applyAppearance();
     for (int i = 0; i < m_tabs->count(); ++i)
@@ -857,7 +1252,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
             ++connected;
     if (connected > 0) {
         const auto r = QMessageBox::question(this, tr("Exit TermX"),
-                                             tr("%n session(s) are still connected. Disconnect and exit?", nullptr, connected));
+                                             tr("%n session(s) still connected. Disconnect and exit?", nullptr, connected));
         if (r != QMessageBox::Yes) {
             e->ignore();
             return;

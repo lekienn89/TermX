@@ -3,12 +3,16 @@
 A fast, stable terminal for network and DevOps work on Windows 10 and 11:
 SSH, Telnet, serial consoles and local shells in one tabbed window.
 
-> Status: early development (Phase 1 of the roadmap). Expect rough edges.
+Current release: **1.0.0**. Download the MSI installer (or the portable zip) from the
+[Releases](https://github.com/lekienn89/TermX/releases) page.
 
 ## Features
 
 - **SSH** (libssh2 + OpenSSL): password, keyboard-interactive, private key, Pageant/OpenSSH agent,
-  known-hosts checking with SHA-256 fingerprints, keep-alive, optional legacy algorithms for old switches.
+  known-hosts checking with SHA-256 fingerprints and a per-session host key policy (ask, accept new,
+  strict), keep-alive. Modern algorithms only by default (curve25519, Ed25519, AES-GCM/CTR, and
+  chacha20-poly1305 when the libssh2 build has it); when an old switch needs SHA-1 key exchange,
+  ssh-rsa or CBC, TermX asks before using them and can remember the choice for that session.
 - **Telnet** with full option negotiation (NAWS, terminal type, echo, binary) and **raw TCP**.
 - **Serial** consoles with **automatic detection of USB console cables**: plug a cable in and TermX
   offers to open it (or opens it automatically, or reconnects the tab that was waiting for it).
@@ -19,7 +23,17 @@ SSH, Telnet, serial consoles and local shells in one tabbed window.
   Passwords and secrets are never recorded.
 - Tabs, split panes, 100k-line scrollback, find, copy on select, safe multi-line paste,
   bracketed paste, session logging, session tree with folders, dark and light themes.
-- Saved passwords are encrypted with Windows DPAPI for the current user.
+- **Quick Connect bar** (Ctrl+Shift+K): type `admin@10.0.0.1`, `ssh -p 2222 host`, `telnet host 23`,
+  `COM3 115200` or the name of a saved session.
+- **Command palette** (Ctrl+Shift+P): fuzzy search over every menu command, saved session and snippet.
+- **Snippets** (Ctrl+Shift+S): saved commands in groups; run with Enter or insert without Enter.
+- **Broadcast input** (Ctrl+Shift+I): type into every pane of a tab, or every tab, at once.
+- **Import sessions** from PuTTY (registry or `.reg` export) and from `~/.ssh/config`.
+- **Preferences** (Ctrl+,): terminal font and size with preview, cursor shape and blink,
+  copy on select, PuTTY-style right-click paste, and **customizable keyboard shortcuts**.
+- Regular-expression search in the scrollback; per-line timestamps in session logs.
+- Saved passwords are encrypted with Windows DPAPI for the current user, and passwords are wiped
+  from memory after login.
 - Crash safety: I/O runs on separate threads, the UI never waits on the network or a driver,
   crash minidumps are written locally, and a safe mode starts after repeated failed launches.
 
@@ -27,6 +41,8 @@ SSH, Telnet, serial consoles and local shells in one tabbed window.
 
 | Action | Keys |
 | --- | --- |
+| Command palette | Ctrl+Shift+P |
+| Quick Connect | Ctrl+Shift+K |
 | New session | Ctrl+Shift+N |
 | New local shell | Ctrl+Shift+T |
 | Close pane | Ctrl+Shift+W |
@@ -35,10 +51,23 @@ SSH, Telnet, serial consoles and local shells in one tabbed window.
 | Copy / Paste | Ctrl+Shift+C / Ctrl+Shift+V (or Shift+Insert) |
 | Find | Ctrl+Shift+F |
 | History panel | Ctrl+Shift+H |
+| Snippets panel | Ctrl+Shift+S |
+| Broadcast input to this tab | Ctrl+Shift+I |
+| Log to file | Ctrl+Shift+L |
+| Preferences | Ctrl+, |
 | Accept suggestion | → or End |
 | Next suggestion | Alt+↓ / Alt+↑ |
 
-Ctrl+letter keys always go to the remote side (Ctrl+C, Ctrl+Z, Ctrl+Shift+6 for Cisco break sequences).
+Ctrl+letter keys go to the remote side (Ctrl+C, Ctrl+Z, Ctrl+Shift+6 for Cisco break sequences)
+unless you bind one to a command in Preferences › Keyboard. Help › Keyboard Shortcuts shows the
+current bindings.
+
+## Installing
+
+`TermX-1.0.0-x64.msi` installs per machine into `C:\Program Files\TermX` with Start menu and
+desktop shortcuts, and upgrades earlier versions in place. Silent install:
+`msiexec /i TermX-1.0.0-x64.msi /qn` (add `INSTALLDESKTOPSHORTCUT=0` to skip the desktop icon).
+The builds are not code-signed yet, so Windows SmartScreen may ask for confirmation the first time.
 
 ## Command line
 
@@ -62,6 +91,14 @@ ctest --preset windows-msvc
 ```
 
 vcpkg installs libssh2 (with OpenSSL) and SQLite automatically from `vcpkg.json`.
+
+To build the installer, install the WiX 5 tool (`dotnet tool install --global wix --version 5.0.2`
+and `wix extension add -g WixToolset.UI.wixext/5.0.2`), deploy the app into `dist\TermX`
+with `windeployqt` as in `.github/workflows/ci.yml`, then run
+`wix build installer/TermX.wxs -arch x64 -ext WixToolset.UI.wixext -d Version=1.0.0 -d RepoDir=. -d DistDir=dist\TermX -o dist\TermX-1.0.0-x64.msi`.
+
+A note on the libssh2 version string: the vcpkg port builds the 1.11.1 release from its source
+archive, whose `libssh2.h` still carries the `1.11.1_DEV` label; the code is the 1.11.1 release.
 
 ## Building on Linux (development and tests)
 

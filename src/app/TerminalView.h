@@ -41,6 +41,7 @@ private:
     QWidget *m_findBar;
     QLineEdit *m_findEdit;
     QCheckBox *m_findCase;
+    QCheckBox *m_findRegex;
     QLabel *m_findStatus;
     bool m_syncing = false;
 };

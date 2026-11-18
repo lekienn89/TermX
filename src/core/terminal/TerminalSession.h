@@ -75,6 +75,7 @@ Q_SIGNALS:
     void notice(const QString &text);
     void commandExecuted(const QString &command);
     void secretAccepted(const QString &secret);
+    void legacyAlgorithmsAccepted();
     void inputChanged();      // the user typed: suggestion popup may update
 
 private:

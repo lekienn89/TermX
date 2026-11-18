@@ -81,6 +81,17 @@ SessionDialog::SessionDialog(const SessionConfig &cfg, const QStringList &folder
     keyRow->addWidget(browse);
     m_sshAgent = new QCheckBox(tr("Use SSH agent (Pageant / OpenSSH agent)"), ssh);
     m_sshLegacy = new QCheckBox(tr("Allow legacy algorithms (old switches and routers)"), ssh);
+    m_sshLegacy->setToolTip(tr("Adds SHA-1 key exchange, ssh-rsa / ssh-dss host keys and CBC ciphers.\n"
+                               "These are weak; enable only for devices that cannot do better.\n"
+                               "TermX offers to enable them when a server needs them."));
+    m_sshLegacyWarn = new QLabel(tr("\u26A0 Weak algorithms are allowed for this session."), ssh);
+    m_sshLegacyWarn->setStyleSheet(QStringLiteral("color: #D29922;"));
+    m_sshLegacyWarn->setVisible(false);
+    connect(m_sshLegacy, &QCheckBox::toggled, m_sshLegacyWarn, &QWidget::setVisible);
+    m_sshHostKey = new QComboBox(ssh);
+    m_sshHostKey->addItem(tr("Ask for unknown or changed keys"), int(HostKeyPolicy::Ask));
+    m_sshHostKey->addItem(tr("Trust new hosts, refuse changed keys"), int(HostKeyPolicy::AcceptNew));
+    m_sshHostKey->addItem(tr("Strict: only hosts already in known_hosts"), int(HostKeyPolicy::Strict));
     m_sshKeepAlive = spin(0, 3600, ssh);
     m_sshKeepAlive->setSuffix(tr(" s"));
     m_sshKeepAlive->setSpecialValueText(tr("Off"));
@@ -89,7 +100,9 @@ SessionDialog::SessionDialog(const SessionConfig &cfg, const QStringList &folder
     sf->addRow(tr("Username"), m_sshUser);
     sf->addRow(tr("Key file"), keyRow);
     sf->addRow(QString(), m_sshAgent);
+    sf->addRow(tr("Host keys"), m_sshHostKey);
     sf->addRow(QString(), m_sshLegacy);
+    sf->addRow(QString(), m_sshLegacyWarn);
     sf->addRow(tr("Keep-alive"), m_sshKeepAlive);
     m_stack->addWidget(ssh);
 
@@ -189,6 +202,8 @@ SessionDialog::SessionDialog(const SessionConfig &cfg, const QStringList &folder
     of->addRow(QString(), m_localEcho);
     of->addRow(QString(), m_history);
     of->addRow(QString(), m_log);
+    m_logTimes = new QCheckBox(tr("Add a timestamp to every logged line"), termBox);
+    of->addRow(QString(), m_logTimes);
     if (!cfg.encryptedPassword.isEmpty()) {
         m_forgetPassword = new QCheckBox(tr("Forget saved password"), termBox);
         of->addRow(QString(), m_forgetPassword);
@@ -231,6 +246,8 @@ void SessionDialog::load(const SessionConfig &c)
     m_sshKey->setText(c.ssh.keyFile);
     m_sshAgent->setChecked(c.ssh.useAgent);
     m_sshLegacy->setChecked(c.ssh.allowLegacyAlgorithms);
+    m_sshLegacyWarn->setVisible(c.ssh.allowLegacyAlgorithms);
+    m_sshHostKey->setCurrentIndex(qMax(0, m_sshHostKey->findData(int(c.ssh.hostKeyPolicy))));
     m_sshKeepAlive->setValue(c.ssh.keepAliveSeconds);
 
     m_telHost->setText(c.telnet.host);
@@ -266,6 +283,7 @@ void SessionDialog::load(const SessionConfig &c)
     m_localEcho->setChecked(c.terminal.localEcho);
     m_history->setChecked(c.historyEnabled);
     m_log->setChecked(c.logEnabled);
+    m_logTimes->setChecked(c.logTimestamps);
     m_scrollback->setValue(c.terminal.scrollbackLines);
     const auto t = c.type;
     m_enter->setEnabled(t == SessionType::Serial || t == SessionType::Telnet);
@@ -285,6 +303,7 @@ SessionConfig SessionDialog::config() const
     c.ssh.keyFile = m_sshKey->text().trimmed();
     c.ssh.useAgent = m_sshAgent->isChecked();
     c.ssh.allowLegacyAlgorithms = m_sshLegacy->isChecked();
+    c.ssh.hostKeyPolicy = HostKeyPolicy(m_sshHostKey->currentData().toInt());
     c.ssh.keepAliveSeconds = m_sshKeepAlive->value();
 
     c.telnet.host = m_telHost->text().trimmed();
@@ -318,6 +337,7 @@ SessionConfig SessionDialog::config() const
     c.terminal.scrollbackLines = m_scrollback->value();
     c.historyEnabled = m_history->isChecked();
     c.logEnabled = m_log->isChecked();
+    c.logTimestamps = m_logTimes->isChecked();
     if (m_forgetPassword && m_forgetPassword->isChecked())
         c.encryptedPassword.clear();
     return c;

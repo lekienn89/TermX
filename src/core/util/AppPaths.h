@@ -20,6 +20,7 @@ public:
     static QString knownHostsFile();
     static QString settingsFile();
     static QString stateFile();
+    static QString snippetsFile();
 };
 
 } // namespace termx

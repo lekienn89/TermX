@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "SshTransport.h"
 #include "SocketUtil.h"
+#include "util/SecureWipe.h"
 
 #include <QCryptographicHash>
 #include <QDeadlineTimer>
@@ -28,8 +29,9 @@ const char *kKexLegacy = ",diffie-hellman-group14-sha1,diffie-hellman-group-exch
 const char *kHostKeyModern =
     "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256";
 const char *kHostKeyLegacy = ",ssh-rsa,ssh-dss";
+// libssh2 drops names it was built without, so listing chacha20 is safe.
 const char *kCipherModern =
-    "aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr";
+    "chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr";
 const char *kCipherLegacy = ",aes256-cbc,aes192-cbc,aes128-cbc,3des-cbc";
 const char *kMacModern =
     "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512";
@@ -86,6 +88,7 @@ public:
 
     ~SshWorker() override
     {
+        secureWipe(m_password);
         if (m_shared) {
             std::lock_guard<std::mutex> lock(m_shared->mx);
             m_shared->waker = nullptr;
@@ -170,36 +173,45 @@ private:
             fail(QStringLiteral("No host name given"));
             return;
         }
-        QString err;
-        m_sock = net::tcpConnect(m_opts.host, uint16_t(m_opts.port), m_opts.connectTimeoutSeconds * 1000,
-                                 m_shared->stop, err);
-        if (m_sock == net::kInvalidSocket) {
-            fail(err);
-            return;
-        }
-        m_session = libssh2_session_init_ex(nullptr, nullptr, nullptr, this);
-        if (!m_session) {
-            fail(QStringLiteral("Cannot create SSH session"));
-            return;
-        }
-        libssh2_session_set_blocking(m_session, 0);
-        setMethodPreferences();
-
-        QDeadlineTimer deadline(qint64(m_opts.connectTimeoutSeconds) * 1000);
-        int rc = retry([&] { return libssh2_session_handshake(m_session, m_sock); }, deadline);
-        if (rc != 0) {
-            if (rc == LIBSSH2_ERROR_KEX_FAILURE && !m_opts.allowLegacyAlgorithms)
-                fail(QStringLiteral("SSH handshake failed: no common algorithms. The device may need legacy "
-                                    "algorithms (enable them in the session settings)."));
-            else
-                fail(QStringLiteral("SSH handshake failed: %1").arg(sshError(m_session)));
+        for (;;) {
+            const int rc = connectAndHandshake();
+            if (rc == 0)
+                break;
+            if (rc == kConnectFailed)
+                return;
+            if (rc == LIBSSH2_ERROR_KEX_FAILURE && !m_opts.allowLegacyAlgorithms && !stopRequested()) {
+                // Old switches and routers: offer to retry with weak algorithms.
+                const QString why = sshError(m_session);
+                cleanup();
+                PromptRequest req;
+                req.kind = PromptRequest::Kind::LegacyAlgorithms;
+                req.title = QStringLiteral("Legacy SSH algorithms");
+                req.message = QStringLiteral(
+                                  "%1 only offers old SSH algorithms (such as SHA-1 key exchange, ssh-rsa host keys "
+                                  "or CBC ciphers). They are weak against a well-placed attacker but common on older "
+                                  "network devices.\n\nConnect using legacy algorithms?\n\nDetails: %2")
+                                  .arg(m_opts.host, why);
+                const auto reply = ask(req);
+                if (!reply || !reply->accepted) {
+                    fail(QStringLiteral("SSH handshake failed: the server needs legacy algorithms, which are turned off"));
+                    return;
+                }
+                m_opts.allowLegacyAlgorithms = true;
+                if (reply->remember)
+                    Q_EMIT legacyAlgorithmsAccepted();
+                setState(TransportState::Connecting, QStringLiteral("Reconnecting with legacy algorithms..."));
+                continue;
+            }
+            fail(QStringLiteral("SSH handshake failed: %1").arg(sshError(m_session)));
             return;
         }
         reportLegacyMethods();
 
         if (!verifyHostKey())
             return;
-        if (!authenticate())
+        const bool authed = authenticate();
+        secureWipe(m_password);   // not needed after login; a reconnect starts a new worker
+        if (!authed)
             return;
         if (!openShell())
             return;
@@ -209,6 +221,30 @@ private:
 
         setState(TransportState::Connected, QString());
         pump();
+    }
+
+    static constexpr int kConnectFailed = -10000;
+
+    // 0 on success, a libssh2 error from the handshake, or kConnectFailed
+    // (already reported) when the TCP connection or session setup failed.
+    int connectAndHandshake()
+    {
+        QString err;
+        m_sock = net::tcpConnect(m_opts.host, uint16_t(m_opts.port), m_opts.connectTimeoutSeconds * 1000,
+                                 m_shared->stop, err);
+        if (m_sock == net::kInvalidSocket) {
+            fail(err);
+            return kConnectFailed;
+        }
+        m_session = libssh2_session_init_ex(nullptr, nullptr, nullptr, this);
+        if (!m_session) {
+            fail(QStringLiteral("Cannot create SSH session"));
+            return kConnectFailed;
+        }
+        libssh2_session_set_blocking(m_session, 0);
+        setMethodPreferences();
+        QDeadlineTimer deadline(qint64(m_opts.connectTimeoutSeconds) * 1000);
+        return retry([&] { return libssh2_session_handshake(m_session, m_sock); }, deadline);
     }
 
     void setMethodPreferences()
@@ -275,8 +311,23 @@ private:
         if (check == LIBSSH2_KNOWNHOST_CHECK_MATCH)
             return true;
 
-        PromptRequest req;
         const QString hostDisplay = m_opts.port == 22 ? m_opts.host : QStringLiteral("%1:%2").arg(m_opts.host).arg(m_opts.port);
+        const bool mismatch = check == LIBSSH2_KNOWNHOST_CHECK_MISMATCH;
+        if (m_opts.hostKeyPolicy != HostKeyPolicy::Ask) {
+            if (mismatch)
+                return fail(QStringLiteral("Host key for %1 has CHANGED (%2 %3). Connection refused by the host key policy. "
+                                           "If the device was re-keyed, remove its line from known_hosts.")
+                                .arg(hostDisplay, hostKeyTypeName(keyType), fingerprint));
+            if (m_opts.hostKeyPolicy == HostKeyPolicy::Strict)
+                return fail(QStringLiteral("Host %1 is not in known_hosts (%2 %3). Connection refused by the strict "
+                                           "host key policy.")
+                                .arg(hostDisplay, hostKeyTypeName(keyType), fingerprint));
+            saveHostKey(key, keyLen, keyType, false);
+            Q_EMIT notice(QStringLiteral("New host %1 trusted: %2 %3").arg(hostDisplay, hostKeyTypeName(keyType), fingerprint));
+            return true;
+        }
+
+        PromptRequest req;
         if (check == LIBSSH2_KNOWNHOST_CHECK_MISMATCH) {
             req.kind = PromptRequest::Kind::HostKeyChanged;
             req.title = QStringLiteral("WARNING: host key has changed");
@@ -527,7 +578,7 @@ private:
             }
         }
         for (int i = 0; i < numPrompts; ++i) {
-            const QByteArray a = i < answers.size() ? answers.at(i).toUtf8() : QByteArray();
+            QByteArray a = i < answers.size() ? answers.at(i).toUtf8() : QByteArray();
             char *buf = static_cast<char *>(std::malloc(size_t(a.size()) + 1));
             if (buf) {
                 std::memcpy(buf, a.constData(), size_t(a.size()));
@@ -535,7 +586,9 @@ private:
             }
             responses[i].text = buf;
             responses[i].length = buf ? static_cast<decltype(responses[i].length)>(a.size()) : 0;
+            secureWipe(a);
         }
+        secureWipe(answers);
     }
 
     bool tryKeyboardInteractive()
@@ -577,11 +630,12 @@ private:
                 m_rememberPassword = r->remember;
             }
             useSaved = false;
-            const QByteArray pw = m_password.toUtf8();
+            QByteArray pw = m_password.toUtf8();
             const int rc = retry([&] {
                 return libssh2_userauth_password_ex(m_session, m_user.constData(), unsigned(m_user.size()),
                                                     pw.constData(), unsigned(pw.size()), nullptr);
             }, deadline);
+            secureWipe(pw);
             if (rc == 0) {
                 if (m_rememberPassword)
                     Q_EMIT secretAccepted(m_password);
@@ -742,6 +796,11 @@ SshTransport::SshTransport(const SshOptions &opts, const QString &savedPassword,
                            const QString &knownHostsPath, QObject *parent)
     : Transport(parent), m_opts(opts), m_password(savedPassword), m_knownHosts(knownHostsPath)
 {
+}
+
+SshTransport::~SshTransport()
+{
+    secureWipe(m_password);
 }
 
 TransportWorker *SshTransport::createWorker()

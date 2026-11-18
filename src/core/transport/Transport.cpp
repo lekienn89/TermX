@@ -174,6 +174,7 @@ void Transport::open()
     connect(worker, &TransportWorker::prompt, this, &Transport::promptRequested);
     connect(worker, &TransportWorker::notice, this, &Transport::notice);
     connect(worker, &TransportWorker::secretAccepted, this, &Transport::secretAccepted);
+    connect(worker, &TransportWorker::legacyAlgorithmsAccepted, this, &Transport::legacyAlgorithmsAccepted);
 
     m_state = TransportState::Connecting;
     Q_EMIT stateChanged(m_state, QString());
