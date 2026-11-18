@@ -384,6 +384,7 @@ void TerminalSession::sendCommand(const QString &command, bool execute)
 bool TerminalSession::startLog(const QString &path, QString *error)
 {
     const QString dir = m_cfg.logDirectory.isEmpty() ? AppPaths::logsDir() : m_cfg.logDirectory;
+    m_logger.setTimestamps(m_cfg.logTimestamps);
     return m_logger.start(path.isEmpty() ? SessionLogger::defaultPath(dir, m_cfg.displayName()) : path, error);
 }
 

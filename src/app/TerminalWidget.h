@@ -8,9 +8,11 @@
 
 #include <QFont>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QWidget>
 
+#include <functional>
 #include <vector>
 
 class QListWidget;
@@ -42,10 +44,19 @@ public:
     void selectAll();
     void clearSelection();
 
-    // Search (returns false when nothing found).
-    bool find(const QString &text, bool backwards, bool caseSensitive);
+    // Returns false when nothing matches. `regex` treats text as a regular
+    // expression; an invalid one sets *invalid and matches nothing.
+    bool find(const QString &text, bool backwards, bool caseSensitive, bool regex = false, bool *invalid = nullptr);
     void clearSearch();
     int searchMatchCountVisible() const;
+
+    // Broadcast input: everything typed or pasted here also goes to these
+    // sessions (each through its own terminal, so key modes stay right).
+    void setBroadcastTargets(std::function<QList<TerminalSession *>()> targets) { m_broadcast = std::move(targets); }
+    void setBroadcastHighlight(bool on);
+
+    // Sends text as if typed (used by snippets); goes to broadcast targets too.
+    void typeText(const QString &text);
 
     void applyAppearance();   // after theme / font changes
     QSize cellSize() const { return QSize(int(m_cw), int(m_ch)); }
@@ -125,8 +136,14 @@ private:
     int m_autoScrollDir = 0;
     int m_mouseButtonsDown = 0;
 
-    QString m_searchText;
-    bool m_searchCase = false;
+    void sendKey(int vkey, int mods);
+    void sendText(const QString &text, int mods);
+    void sendRaw(const QByteArray &bytes);
+    QList<TerminalSession *> broadcastTargets() const;
+    std::function<QList<TerminalSession *>()> m_broadcast;
+    bool m_broadcastHighlight = false;
+
+    QRegularExpression m_searchRx;   // empty pattern = no search
     Pos m_searchHit{-1, 0};
     int m_searchLen = 0;
 

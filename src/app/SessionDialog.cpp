@@ -189,6 +189,8 @@ SessionDialog::SessionDialog(const SessionConfig &cfg, const QStringList &folder
     of->addRow(QString(), m_localEcho);
     of->addRow(QString(), m_history);
     of->addRow(QString(), m_log);
+    m_logTimes = new QCheckBox(tr("Add a timestamp to every logged line"), termBox);
+    of->addRow(QString(), m_logTimes);
     if (!cfg.encryptedPassword.isEmpty()) {
         m_forgetPassword = new QCheckBox(tr("Forget saved password"), termBox);
         of->addRow(QString(), m_forgetPassword);
@@ -266,6 +268,7 @@ void SessionDialog::load(const SessionConfig &c)
     m_localEcho->setChecked(c.terminal.localEcho);
     m_history->setChecked(c.historyEnabled);
     m_log->setChecked(c.logEnabled);
+    m_logTimes->setChecked(c.logTimestamps);
     m_scrollback->setValue(c.terminal.scrollbackLines);
     const auto t = c.type;
     m_enter->setEnabled(t == SessionType::Serial || t == SessionType::Telnet);
@@ -318,6 +321,7 @@ SessionConfig SessionDialog::config() const
     c.terminal.scrollbackLines = m_scrollback->value();
     c.historyEnabled = m_history->isChecked();
     c.logEnabled = m_log->isChecked();
+    c.logTimestamps = m_logTimes->isChecked();
     if (m_forgetPassword && m_forgetPassword->isChecked())
         c.encryptedPassword.clear();
     return c;

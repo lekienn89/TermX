@@ -22,6 +22,12 @@ public:
     QString path() const { return m_file.fileName(); }
     void write(const QByteArray &raw);
     void writeMarker(const QString &text);
+    // Prefix every line with its arrival time, e.g. "[2026-11-18 22:30:01.123] ".
+    void setTimestamps(bool on) { m_timestamps = on; }
+    bool timestamps() const { return m_timestamps; }
+
+    // Public for tests: appends `plain` to `out`, stamping each new line.
+    static void appendStamped(const QByteArray &plain, const QByteArray &stamp, bool &atLineStart, QByteArray &out);
 
     static QString defaultPath(const QString &dir, const QString &sessionName);
 
@@ -29,6 +35,9 @@ private:
     QFile m_file;
     AnsiStripper m_strip;
     QByteArray m_buf;
+    QByteArray m_plain;
+    bool m_timestamps = true;
+    bool m_atLineStart = true;
     QTimer m_flush;
 };
 

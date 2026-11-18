@@ -9,6 +9,9 @@ set(TERMX_APP_SOURCES
     Panels.cpp Panels.h
     Theme.cpp Theme.h
     CrashHandler.cpp CrashHandler.h
+    QuickConnectBar.cpp QuickConnectBar.h
+    SnippetPanel.cpp SnippetPanel.h
+    CommandPalette.cpp CommandPalette.h
     ${PROJECT_SOURCE_DIR}/resources/termx.qrc
 )
 if(WIN32)

@@ -32,6 +32,8 @@ TerminalView::TerminalView(TerminalSession *session, HistoryStore *history, QWid
     m_findEdit->setPlaceholderText(tr("Find in scrollback"));
     m_findEdit->setClearButtonEnabled(true);
     m_findCase = new QCheckBox(tr("Match case"), m_findBar);
+    m_findRegex = new QCheckBox(tr("Regex"), m_findBar);
+    m_findRegex->setToolTip(tr("Treat the search text as a regular expression, e.g. (error|fail)\\w*"));
     auto *prev = new QToolButton(m_findBar);
     prev->setText(tr("Previous"));
     prev->setArrowType(Qt::UpArrow);
@@ -48,6 +50,7 @@ TerminalView::TerminalView(TerminalSession *session, HistoryStore *history, QWid
     fl->addWidget(prev);
     fl->addWidget(next);
     fl->addWidget(m_findCase);
+    fl->addWidget(m_findRegex);
     fl->addWidget(m_findStatus);
     fl->addWidget(close);
     m_findBar->hide();
@@ -76,6 +79,8 @@ TerminalView::TerminalView(TerminalSession *session, HistoryStore *history, QWid
         doFind(QApplication::keyboardModifiers() & Qt::ShiftModifier);
     });
     connect(m_findEdit, &QLineEdit::textChanged, this, [this] { doFind(false); });
+    connect(m_findCase, &QCheckBox::toggled, this, [this] { doFind(false); });
+    connect(m_findRegex, &QCheckBox::toggled, this, [this] { doFind(false); });
     connect(prev, &QToolButton::clicked, this, [this] { doFind(true); });
     connect(next, &QToolButton::clicked, this, [this] { doFind(false); });
     connect(close, &QToolButton::clicked, this, &TerminalView::hideFindBar);
@@ -137,8 +142,9 @@ void TerminalView::doFind(bool backwards)
         m_findStatus->clear();
         return;
     }
-    const bool found = m_term->find(t, backwards, m_findCase->isChecked());
-    m_findStatus->setText(found ? QString() : tr("Not found"));
+    bool invalid = false;
+    const bool found = m_term->find(t, backwards, m_findCase->isChecked(), m_findRegex->isChecked(), &invalid);
+    m_findStatus->setText(invalid ? tr("Invalid pattern") : found ? QString() : tr("Not found"));
 }
 
 } // namespace termx

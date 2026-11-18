@@ -16,6 +16,10 @@ termx_add_test(tst_ansistripper)
 termx_add_test(tst_sessionconfig)
 termx_add_test(tst_historystore)
 termx_add_test(tst_jsonfile)
+termx_add_test(tst_sessionlogger)
+termx_add_test(tst_quickconnect)
+termx_add_test(tst_snippetstore)
+termx_add_test(tst_fuzzymatch)
 
 # Crash inputs found by fuzzing, replayed through the fuzz harnesses.
 add_executable(tst_fuzz_vtscreen tst_fuzzregressions.cpp ${PROJECT_SOURCE_DIR}/fuzz/fuzz_vtscreen.cpp)

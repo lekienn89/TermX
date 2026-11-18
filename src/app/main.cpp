@@ -2,6 +2,7 @@
 #include "CrashHandler.h"
 #include "MainWindow.h"
 #include "Theme.h"
+#include "session/QuickConnect.h"
 #include "session/SessionConfig.h"
 #include "transport/SshTransport.h"
 #include "transport/Transport.h"
@@ -52,39 +53,14 @@ private:
     int m_failures = 0;
 };
 
-// termx local  ssh://user@host:22  telnet://host:23  serial://COM7?baud=115200  or  user@host
+// Positional arguments use the Quick Connect syntax, e.g.
+//   TermX.exe admin@10.0.0.1   "telnet 10.0.0.1 2001"   COM7:115200   serial://COM7?baud=9600   local
 bool sessionFromArgument(const QString &arg, SessionConfig &c)
 {
-    if (arg.compare(QLatin1String("local"), Qt::CaseInsensitive) == 0) {
-        c.type = SessionType::LocalShell;
+    QString err;
+    if (QuickConnect::parse(arg, c, &err))
         return true;
-    }
-    QUrl url(arg.contains(QStringLiteral("://")) ? arg : QStringLiteral("ssh://") + arg);
-    if (!url.isValid())
-        return false;
-    const QString scheme = url.scheme().toLower();
-    if (scheme == QLatin1String("ssh")) {
-        c.type = SessionType::Ssh;
-        c.ssh.host = url.host();
-        c.ssh.port = url.port(22);
-        c.ssh.username = url.userName();
-        return !c.ssh.host.isEmpty();
-    }
-    if (scheme == QLatin1String("telnet") || scheme == QLatin1String("raw")) {
-        c.type = SessionType::Telnet;
-        c.telnet.host = url.host();
-        c.telnet.port = url.port(23);
-        c.telnet.rawTcp = scheme == QLatin1String("raw");
-        return !c.telnet.host.isEmpty();
-    }
-    if (scheme == QLatin1String("serial")) {
-        c.type = SessionType::Serial;
-        c.serial.portName = url.host().isEmpty() ? url.path().remove(QLatin1Char('/')) : url.host().toUpper();
-        const QUrlQuery q(url);
-        if (q.hasQueryItem(QStringLiteral("baud")))
-            c.serial.baudRate = qMax(50, q.queryItemValue(QStringLiteral("baud")).toInt());
-        return !c.serial.portName.isEmpty();
-    }
+    std::fprintf(stderr, "TermX: ignoring '%s': %s\n", qPrintable(arg), qPrintable(err));
     return false;
 }
 

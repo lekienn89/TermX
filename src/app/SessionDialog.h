@@ -68,6 +68,7 @@ private:
     QCheckBox *m_localEcho;
     QCheckBox *m_history;
     QCheckBox *m_log;
+    QCheckBox *m_logTimes;
     QSpinBox *m_scrollback;
     QCheckBox *m_forgetPassword = nullptr;
 };

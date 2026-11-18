@@ -63,6 +63,7 @@ QJsonObject SessionConfig::toJson() const
     o[QStringLiteral("history")] = historyEnabled;
     o[QStringLiteral("log")] = logEnabled;
     o[QStringLiteral("logDir")] = logDirectory;
+    o[QStringLiteral("logTimestamps")] = logTimestamps;
     o[QStringLiteral("password")] = encryptedPassword;
     o[QStringLiteral("notes")] = notes;
 
@@ -125,6 +126,7 @@ SessionConfig SessionConfig::fromJson(const QJsonObject &o)
     c.historyEnabled = o.value(QStringLiteral("history")).toBool(true);
     c.logEnabled = o.value(QStringLiteral("log")).toBool(false);
     c.logDirectory = o.value(QStringLiteral("logDir")).toString();
+    c.logTimestamps = o.value(QStringLiteral("logTimestamps")).toBool(true);
     c.encryptedPassword = o.value(QStringLiteral("password")).toString();
     c.notes = o.value(QStringLiteral("notes")).toString();
 

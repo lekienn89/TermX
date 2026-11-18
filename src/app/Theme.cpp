@@ -131,7 +131,13 @@ QString styleSheet(bool dark)
                "QToolBar { border: none; spacing: 4px; padding: 2px; }"
                "QStatusBar { border-top: 1px solid %1; }"
                "QLineEdit, QComboBox, QSpinBox { padding: 3px 6px; }"
-               "QTreeView, QListView { border: none; }")
+               "QTreeView, QListView { border: none; }"
+               "QWidget#quickConnectBar { background: %2; border-bottom: 1px solid %1; }"
+               "QLineEdit#quickConnect { background: %3; border: 1px solid %1; border-radius: 6px; padding: 4px 8px; }"
+               "QLineEdit#quickConnect:focus { border-color: %6; }"
+               "QLineEdit#quickConnect[error=\"true\"] { border-color: #E5534B; }"
+               "QFrame#commandPalette { background: %3; border: 1px solid %1; border-radius: 8px; }"
+               "QLabel#broadcastBadge { background: #D29922; color: #1F2328; border-radius: 4px; padding: 1px 6px; font-weight: 600; }")
         .arg(border, tabBg, tabSel, tabText, tabTextSel, accent);
 }
 } // namespace

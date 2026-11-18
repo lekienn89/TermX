@@ -216,6 +216,12 @@ void TerminalWidget::paintEvent(QPaintEvent *e)
     for (int r = firstRow; r <= lastRow; ++r)
         drawRow(p, r, top + r);
 
+    if (m_broadcastHighlight) {
+        p.setPen(QPen(QColor(0xD2, 0x99, 0x22), 2));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(rect()).adjusted(1, 1, -1, -1));
+    }
+
     // Cursor.
     const CursorInfo c = scr.cursor();
     const int crow = c.row + m_scrollOffset;
@@ -263,15 +269,16 @@ void TerminalWidget::drawRow(QPainter &p, int row, qint64 absLine)
     std::vector<std::pair<int, int>> hits;   // [colStart, colEnd)
     bool currentHitHere = false;
     std::pair<int, int> currentHit{0, 0};
-    if (!m_searchText.isEmpty()) {
+    if (!m_searchRx.pattern().isEmpty()) {
         std::vector<int> colOf;
         const QString text = lineString(absLine, &colOf);
-        const Qt::CaseSensitivity cs = m_searchCase ? Qt::CaseSensitive : Qt::CaseInsensitive;
-        for (int from = 0;;) {
-            const int idx = int(text.indexOf(m_searchText, from, cs));
-            if (idx < 0)
-                break;
-            const int endIdx = idx + int(m_searchText.size()) - 1;
+        auto it = m_searchRx.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            if (m.capturedLength() <= 0)
+                continue;
+            const int idx = int(m.capturedStart());
+            const int endIdx = idx + int(m.capturedLength()) - 1;
             const int c0 = colOf[size_t(idx)];
             const int c1 = colOf[size_t(std::min<int>(endIdx, int(colOf.size()) - 1))] + 1;
             hits.emplace_back(c0, c1);
@@ -279,7 +286,6 @@ void TerminalWidget::drawRow(QPainter &p, int row, qint64 absLine)
                 currentHitHere = true;
                 currentHit = {c0, c1};
             }
-            from = idx + 1;
         }
     }
 
@@ -585,22 +591,92 @@ void TerminalWidget::pasteText(const QString &textIn)
     }
     scrollToBottom();
     m_session->paste(text);
+    for (TerminalSession *t : broadcastTargets())
+        if (t->state() == TransportState::Connected)
+            t->paste(text);
+}
+
+QList<TerminalSession *> TerminalWidget::broadcastTargets() const
+{
+    QList<TerminalSession *> out;
+    if (m_broadcast)
+        for (TerminalSession *t : m_broadcast())
+            if (t && t != m_session)
+                out << t;
+    return out;
+}
+
+void TerminalWidget::sendKey(int vkey, int mods)
+{
+    m_session->userKey(vkey, mods);
+    for (TerminalSession *t : broadcastTargets())
+        t->userKey(vkey, mods);
+}
+
+void TerminalWidget::sendText(const QString &text, int mods)
+{
+    m_session->userText(text, mods);
+    for (TerminalSession *t : broadcastTargets())
+        t->userText(text, mods);
+}
+
+void TerminalWidget::sendRaw(const QByteArray &bytes)
+{
+    m_session->userRaw(bytes);
+    for (TerminalSession *t : broadcastTargets())
+        t->userRaw(bytes);
+}
+
+void TerminalWidget::typeText(const QString &text)
+{
+    if (!m_session || text.isEmpty())
+        return;
+    clearSelection();
+    scrollToBottom();
+    // Line breaks become Enter so each line runs, whatever the session's newline mode.
+    const QStringList lines = text.split(QRegularExpression(QStringLiteral("\r\n|\n|\r")));
+    for (int i = 0; i < lines.size(); ++i) {
+        if (!lines[i].isEmpty())
+            sendText(lines[i], 0);
+        if (i + 1 < lines.size())
+            sendKey(VTERM_KEY_ENTER, 0);
+    }
+}
+
+void TerminalWidget::setBroadcastHighlight(bool on)
+{
+    if (m_broadcastHighlight == on)
+        return;
+    m_broadcastHighlight = on;
+    update();
 }
 
 // ---------------------------------------------------------------- search
 
-bool TerminalWidget::find(const QString &text, bool backwards, bool caseSensitive)
+bool TerminalWidget::find(const QString &text, bool backwards, bool caseSensitive, bool regex, bool *invalid)
 {
-    m_searchText = text;
-    m_searchCase = caseSensitive;
+    if (invalid)
+        *invalid = false;
     if (text.isEmpty()) {
         clearSearch();
         return false;
     }
+    QRegularExpression rx(regex ? text : QRegularExpression::escape(text),
+                          caseSensitive ? QRegularExpression::NoPatternOption
+                                        : QRegularExpression::CaseInsensitiveOption);
+    if (!rx.isValid()) {
+        if (invalid)
+            *invalid = true;
+        clearSearch();
+        return false;
+    }
+    if (rx.pattern() != m_searchRx.pattern() || rx.patternOptions() != m_searchRx.patternOptions())
+        m_searchHit = Pos{-1, 0};   // new search starts from the view, not the old hit
+    m_searchRx = rx;
+
     const VtScreen &s = m_session->screen();
     const qint64 first = s.firstAvailableLine();
     const qint64 last = s.firstScreenLine() + s.rows() - 1;
-    const Qt::CaseSensitivity cs = caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive;
 
     qint64 line = m_searchHit.line >= first ? m_searchHit.line : (backwards ? last : topLine());
     int startCol = m_searchHit.line >= first ? m_searchHit.col + (backwards ? -1 : 1) : (backwards ? s.cols() : 0);
@@ -608,32 +684,27 @@ bool TerminalWidget::find(const QString &text, bool backwards, bool caseSensitiv
     std::vector<int> colOf;
     for (qint64 step = 0; step <= total; ++step) {
         const QString str = lineString(line, &colOf);
-        int idx = -1;
-        if (backwards) {
-            // last match starting before startCol
-            int from = 0;
-            for (;;) {
-                const int i = int(str.indexOf(text, from, cs));
-                if (i < 0 || colOf[size_t(i)] > startCol)
+        int idx = -1, len = 0;
+        auto it = m_searchRx.globalMatch(str);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            if (m.capturedLength() <= 0)
+                continue;
+            const int col = colOf[size_t(m.capturedStart())];
+            if (backwards) {
+                if (col > startCol)
                     break;
-                idx = i;
-                from = i + 1;
-            }
-        } else {
-            for (int from = 0;;) {
-                const int i = int(str.indexOf(text, from, cs));
-                if (i < 0)
-                    break;
-                if (colOf[size_t(i)] >= startCol) {
-                    idx = i;
-                    break;
-                }
-                from = i + 1;
+                idx = int(m.capturedStart());
+                len = int(m.capturedLength());
+            } else if (col >= startCol) {
+                idx = int(m.capturedStart());
+                len = int(m.capturedLength());
+                break;
             }
         }
         if (idx >= 0) {
             m_searchHit = Pos{line, colOf[size_t(idx)]};
-            m_searchLen = int(text.size());
+            m_searchLen = len;
             // Bring it into view.
             const qint64 top = topLine();
             if (line < top || line >= top + s.rows()) {
@@ -658,7 +729,7 @@ bool TerminalWidget::find(const QString &text, bool backwards, bool caseSensitiv
 
 void TerminalWidget::clearSearch()
 {
-    m_searchText.clear();
+    m_searchRx = QRegularExpression();
     m_searchHit = Pos{-1, 0};
     update();
 }
@@ -788,7 +859,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent *e)
         if (ctrl) {
             clearSelection();
             scrollToBottom();
-            m_session->userRaw(QByteArray("\x08", 1));
+            sendRaw(QByteArray("\x08", 1));
             return;
         }
         vkey = VTERM_KEY_BACKSPACE;
@@ -804,7 +875,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent *e)
         int m = mods;
         if (key == Qt::Key_Backtab)
             m |= VTERM_MOD_SHIFT;
-        m_session->userKey(vkey, m);
+        sendKey(vkey, m);
         return;
     }
 
@@ -831,7 +902,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent *e)
         if (code >= 0) {
             clearSelection();
             scrollToBottom();
-            m_session->userRaw(QByteArray(1, code));
+            sendRaw(QByteArray(1, code));
             return;
         }
     }
@@ -848,7 +919,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent *e)
             scrollToBottom();
             // AltGr arrives as Ctrl+Alt on Windows: it is plain text.
             const int m = (alt && !ctrl) ? VTERM_MOD_ALT : 0;
-            m_session->userText(printable, m);
+            sendText(printable, m);
             return;
         }
     }
@@ -860,7 +931,7 @@ void TerminalWidget::inputMethodEvent(QInputMethodEvent *e)
     if (!e->commitString().isEmpty() && m_session) {
         clearSelection();
         scrollToBottom();
-        m_session->userText(e->commitString(), 0);
+        sendText(e->commitString(), 0);
     }
     e->accept();
 }

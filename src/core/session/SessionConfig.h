@@ -71,6 +71,7 @@ struct SessionConfig {
     TerminalOptions terminal;
     bool historyEnabled = true;
     bool logEnabled = false;
+    bool logTimestamps = true;       // prefix each logged line with its time
     QString logDirectory;            // empty = default logs folder
     QString encryptedPassword;       // base64 DPAPI blob; empty = not saved
     QString notes;
