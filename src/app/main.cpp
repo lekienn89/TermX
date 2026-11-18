@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "CrashHandler.h"
+#include "MainWindow.h"
+#include "Theme.h"
+#include "session/QuickConnect.h"
+#include "session/SessionConfig.h"
+#include "transport/SshTransport.h"
+#include "transport/Transport.h"
+#include "util/AppPaths.h"
+
+#include <QApplication>
+#include <QCommandLineParser>
+#include <QDesktopServices>
+#include <QIcon>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QSettings>
+#include <QTimer>
+#include <QTranslator>
+#include <QUrl>
+#include <QUrlQuery>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+
+using namespace termx;
+
+namespace {
+
+// The UI is English only; this gives tr("%n item(s)", nullptr, n) proper
+// English plurals without shipping a .qm file.
+class EnglishPlurals : public QTranslator {
+public:
+    using QTranslator::QTranslator;
+    bool isEmpty() const override { return false; }
+    QString translate(const char *, const char *source, const char *, int n) const override
+    {
+        if (n < 0 || !source || !std::strstr(source, "(s)"))
+            return QString();
+        return QString::fromUtf8(source).replace(QStringLiteral("(s)"), n == 1 ? QString() : QStringLiteral("s"));
+    }
+};
+
+// Detects repeated crashes during start-up and offers a safe mode that does
+// not reopen the previous tabs.
+class StartupGuard {
+public:
+    explicit StartupGuard(QSettings &s) : m_s(s)
+    {
+        m_failures = m_s.value(QStringLiteral("startup/failures"), 0).toInt();
+        if (m_s.value(QStringLiteral("startup/inProgress"), false).toBool())
+            ++m_failures;
+        m_s.setValue(QStringLiteral("startup/failures"), m_failures);
+        m_s.setValue(QStringLiteral("startup/inProgress"), true);
+        m_s.sync();
+    }
+    bool suggestSafeMode() const { return m_failures >= 2; }
+    void startedOk()
+    {
+        m_s.setValue(QStringLiteral("startup/inProgress"), false);
+        m_s.setValue(QStringLiteral("startup/failures"), 0);
+        m_s.sync();
+    }
+
+private:
+    QSettings &m_s;
+    int m_failures = 0;
+};
+
+// Positional arguments use the Quick Connect syntax, e.g.
+//   TermX.exe admin@10.0.0.1   "telnet 10.0.0.1 2001"   COM7:115200   serial://COM7?baud=9600   local
+bool sessionFromArgument(const QString &arg, SessionConfig &c)
+{
+    QString err;
+    if (QuickConnect::parse(arg, c, &err))
+        return true;
+    std::fprintf(stderr, "TermX: ignoring '%s': %s\n", qPrintable(arg), qPrintable(err));
+    return false;
+}
+
+} // namespace
+
+int main(int argc, char *argv[])
+{
+    QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+    QApplication app(argc, argv);
+    EnglishPlurals plurals;
+    QApplication::installTranslator(&plurals);
+    QApplication::setApplicationName(QStringLiteral("TermX"));
+    QApplication::setOrganizationName(QStringLiteral("TermX"));
+    QApplication::setApplicationVersion(QStringLiteral(TERMX_VERSION));
+    {
+        QIcon icon;
+        for (int size : {16, 24, 32, 48, 64, 128, 256})
+            icon.addFile(QStringLiteral(":/icons/termx-%1.png").arg(size), QSize(size, size));
+        QApplication::setWindowIcon(icon);
+    }
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription(QStringLiteral("TermX terminal"));
+    parser.addHelpOption();
+    parser.addVersionOption();
+    QCommandLineOption safeOpt(QStringLiteral("safe-mode"), QStringLiteral("Start without restoring tabs."));
+    QCommandLineOption dataOpt(QStringLiteral("data-dir"), QStringLiteral("Use another data folder."), QStringLiteral("dir"));
+    parser.addOption(safeOpt);
+    parser.addOption(dataOpt);
+    parser.addPositionalArgument(QStringLiteral("target"), QStringLiteral("ssh://user@host, telnet://host, serial://COM7?baud=9600"));
+    parser.process(app);
+
+    AppPaths::initialize(parser.value(dataOpt));
+    CrashHandler::install(AppPaths::crashDir());
+    registerTransportMetaTypes();
+    if (!SshTransport::globalInit())
+        std::fprintf(stderr, "libssh2 initialisation failed\n");
+
+    QSettings settings(AppPaths::settingsFile(), QSettings::IniFormat);
+    Theme::setTerminalFontSize(settings.value(QStringLiteral("ui/fontSize"), 11.0).toDouble());
+    Theme::loadPrefs(settings);
+    Theme::apply(Theme::modeFromName(settings.value(QStringLiteral("ui/theme"), QStringLiteral("system")).toString()));
+
+    StartupGuard guard(settings);
+    bool safeMode = parser.isSet(safeOpt);
+    if (!safeMode && guard.suggestSafeMode()) {
+        safeMode = QMessageBox::question(nullptr, QStringLiteral("TermX"),
+                                         QStringLiteral("TermX did not start correctly the last two times.\n\n"
+                                                        "Start in safe mode (do not reopen the previous tabs)?"))
+                   == QMessageBox::Yes;
+    }
+
+    int rc = 0;
+    {
+        auto window = std::make_unique<MainWindow>(safeMode);
+        window->show();
+
+        const QStringList reports = CrashHandler::pendingReports(AppPaths::crashDir());
+        if (!reports.isEmpty()) {
+            CrashHandler::acknowledge(AppPaths::crashDir());
+            QTimer::singleShot(500, window.get(), [w = window.get()] {
+                QMessageBox box(QMessageBox::Warning, QStringLiteral("TermX"),
+                                QStringLiteral("TermX closed unexpectedly last time. A crash report was saved "
+                                               "on this computer. Please send it to the developers so the problem can be fixed."),
+                                QMessageBox::Ok, w);
+                QPushButton *open = box.addButton(QStringLiteral("Open Folder"), QMessageBox::ActionRole);
+                box.exec();
+                if (box.clickedButton() == open)
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(AppPaths::crashDir()));
+            });
+        }
+
+        window->restoreTabs();
+        for (const QString &arg : parser.positionalArguments()) {
+            SessionConfig c;
+            if (sessionFromArgument(arg, c))
+                window->openSession(c);
+        }
+        QTimer::singleShot(15000, &app, [&guard] { guard.startedOk(); });
+
+        rc = app.exec();
+        guard.startedOk();
+        window.reset();   // closes every session (I/O threads are told to stop)
+    }
+
+    if (!Transport::shutdownAll(3000)) {
+        // An I/O thread is stuck inside a driver call: do not hang on exit.
+        std::fflush(nullptr);
+        std::_Exit(rc);
+    }
+    SshTransport::globalCleanup();
+    return rc;
+}

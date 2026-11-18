@@ -1,0 +1,23 @@
+TermX includes or links to the following third-party software.
+
+libvterm 0.3.3 - MIT License
+  Copyright (c) 2008 Paul Evans <leonerd@leonerd.org.uk>
+  Full text: third_party/libvterm/LICENSE
+
+Qt 6 - GNU Lesser General Public License v3 (LGPL-3.0)
+  Copyright (C) The Qt Company Ltd. and other contributors.
+  TermX links to Qt dynamically. Qt source code is available from https://download.qt.io/
+
+libssh2 - BSD 3-Clause License
+  Copyright (c) 2004-2007 Sara Golemon, 2009-2024 Daniel Stenberg and others.
+  https://libssh2.org/license.html
+
+OpenSSL 3 - Apache License 2.0
+  Copyright (c) 1998-2024 The OpenSSL Project Authors.
+  https://www.openssl.org/source/license.html
+
+zlib - zlib License
+  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+
+SQLite - Public Domain
+  https://www.sqlite.org/copyright.html

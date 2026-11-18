@@ -1,0 +1,216 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: '6.8.*'
+  VCPKG_COMMIT: 5d4a3dc90c0b3773f3bac81bf41297b54328f471   # keep in sync with vcpkg.json builtin-baseline
+
+jobs:
+  windows:
+    name: Windows x64 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write   # only used by "Publish release" on v* tags
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-2022, windows-2025 ]
+    env:
+      # Not VCPKG_ROOT: the MSVC environment points that at Visual Studio's own vcpkg.
+      TERMX_VCPKG_DIR: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtserialport
+          cache: true
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          $dir = $env:TERMX_VCPKG_DIR
+          git clone --filter=tree:0 https://github.com/microsoft/vcpkg.git $dir
+          git -C $dir checkout $env:VCPKG_COMMIT
+          & "$dir/bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg bootstrap failed" }
+          "VCPKG_ROOT=$dir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset windows-msvc
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-msvc
+
+      - name: Test
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --preset windows-msvc
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist/TermX"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item build/windows-msvc/src/app/TermX.exe $out/
+          Copy-Item build/windows-msvc/src/app/*.dll $out/ -ErrorAction SilentlyContinue
+          # Only what a raster-painted Widgets app needs: no DirectX shader compiler,
+          # no software OpenGL, no image/icon plugins (icons are built-in PNGs), no TLS.
+          windeployqt --release --no-translations --no-system-d3d-compiler --no-system-dxc-compiler `
+            --no-opengl-sw --no-compiler-runtime `
+            --skip-plugin-types imageformats,iconengines,generic,networkinformation,tls,qmltooling `
+            "$out/TermX.exe"
+          # Ship the MSVC runtime next to the exe so a clean Windows needs no VC++ redistributable.
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          if (-not $crt) { throw "MSVC CRT redist folder not found under $env:VCToolsRedistDir" }
+          Copy-Item "$($crt.FullName)\*.dll" $out/
+          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.txt $out/
+          Get-ChildItem $out -Recurse -File | Sort-Object Length -Descending |
+            Format-Table @{n='MB';e={[math]::Round($_.Length/1MB,2)}}, FullName -AutoSize | Out-String -Width 200
+          "Total: {0:N2} MB" -f ((Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+          # Smoke test: the packaged exe must start and stay up.
+          $p = Start-Process -FilePath "$out/TermX.exe" -ArgumentList "--data-dir", "$env:RUNNER_TEMP/termx-smoke" -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "TermX exited early with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(TermX VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          "TERMX_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $root = (Get-Location).Path
+          wix build installer/TermX.wxs -arch x64 -ext WixToolset.UI.wixext `
+            -d Version=$ver -d RepoDir=$root -d DistDir="$root\dist\TermX" `
+            -o "dist/TermX-$ver-x64.msi"
+          if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+          Compress-Archive -Path dist/TermX -DestinationPath "dist/TermX-$ver-x64-portable.zip"
+          Get-ChildItem dist -File | Format-Table Name, Length -AutoSize
+
+      - name: Test MSI install and uninstall
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "dist/TermX-$env:TERMX_VERSION-x64.msi").Path
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v `"$env:RUNNER_TEMP\install.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\install.log" -Tail 60; throw "install failed: $($p.ExitCode)" }
+          $exe = "$env:ProgramFiles\TermX\TermX.exe"
+          if (-not (Test-Path $exe)) { throw "TermX.exe not installed" }
+          (Get-Item $exe).VersionInfo | Format-List FileVersion, ProductVersion, CompanyName, FileDescription
+          $app = Start-Process -FilePath $exe -ArgumentList "--data-dir", "$env:RUNNER_TEMP/termx-msi" -PassThru
+          Start-Sleep -Seconds 8
+          if ($app.HasExited) { throw "Installed TermX exited early with code $($app.ExitCode)" }
+          Stop-Process -Id $app.Id -Force
+          Start-Sleep -Seconds 2
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
+          if (Test-Path $exe) { throw "TermX.exe still present after uninstall" }
+
+      - name: Upload build
+        if: matrix.os == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TermX-windows-x64
+          path: |
+            dist/*.msi
+            dist/*.zip
+          retention-days: 30
+
+      - name: Publish release
+        if: matrix.os == 'windows-2022' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/*.msi dist/*.zip `
+            --title "TermX ${{ github.ref_name }}" --generate-notes
+
+  linux:
+    name: Linux (tests, ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build g++ \
+            qt6-base-dev qt6-base-dev-tools qt6-serialport-dev libssh2-1-dev libsqlite3-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTERMX_WERROR=ON -DTERMX_ASAN=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+  fuzz:
+    name: Fuzz parsers (short)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build clang-18 libclang-rt-18-dev \
+            qt6-base-dev qt6-serialport-dev libssh2-1-dev libsqlite3-dev
+      - name: Build fuzzers
+        run: |
+          FLAGS="-fsanitize=fuzzer-no-link,address,undefined"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" \
+            -DTERMX_BUILD_FUZZERS=ON -DTERMX_BUILD_TESTS=OFF
+          cmake --build build --target fuzz_vtscreen fuzz_telnet fuzz_ansistripper
+      - name: Run fuzzers
+        # Seed each corpus with the saved crash inputs so old bugs are retried first.
+        run: |
+          for f in fuzz_vtscreen fuzz_telnet fuzz_ansistripper; do
+            mkdir -p corpus/$f; cp fuzz/regressions/${f#fuzz_}/* corpus/$f/ 2>/dev/null || true
+            build/fuzz/$f corpus/$f -max_total_time=120 -rss_limit_mb=2048 -timeout=10
+          done
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            timeout-*
+            oom-*

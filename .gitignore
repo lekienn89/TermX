@@ -1,0 +1,17 @@
+build/
+.vs/
+.vscode/
+out/
+vcpkg_installed/
+*.user
+CMakeUserPresets.json
+
+# fuzzing
+crash-*
+timeout-*
+oom-*
+corpus/
+
+# local build outputs
+dist/
+*.msi
