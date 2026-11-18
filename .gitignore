@@ -11,3 +11,7 @@ crash-*
 timeout-*
 oom-*
 corpus/
+
+# local build outputs
+dist/
+*.msi

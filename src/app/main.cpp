@@ -8,6 +8,7 @@
 #include "util/AppPaths.h"
 
 #include <QApplication>
+#include <QIcon>
 #include <QCommandLineParser>
 #include <QDesktopServices>
 #include <QMessageBox>
@@ -96,6 +97,12 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("TermX"));
     QApplication::setOrganizationName(QStringLiteral("TermX"));
     QApplication::setApplicationVersion(QStringLiteral(TERMX_VERSION));
+    {
+        QIcon icon;
+        for (int size : {16, 24, 32, 48, 64, 128, 256})
+            icon.addFile(QStringLiteral(":/icons/termx-%1.png").arg(size), QSize(size, size));
+        QApplication::setWindowIcon(icon);
+    }
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("TermX terminal"));
