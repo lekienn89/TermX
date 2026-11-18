@@ -25,8 +25,8 @@ PromptDialog::PromptDialog(const PromptRequest &req, const QString &sessionName,
     auto *top = new QHBoxLayout;
     if (hostKey) {
         auto *icon = new QLabel(this);
-        const auto sp = req.kind == PromptRequest::Kind::HostKeyChanged ? QStyle::SP_MessageBoxWarning
-                                                                        : QStyle::SP_MessageBoxQuestion;
+        const auto sp = req.kind == PromptRequest::Kind::HostKeyUnknown ? QStyle::SP_MessageBoxQuestion
+                                                                        : QStyle::SP_MessageBoxWarning;
         icon->setPixmap(style()->standardIcon(sp).pixmap(40, 40));
         icon->setAlignment(Qt::AlignTop);
         top->addWidget(icon);
@@ -69,7 +69,10 @@ PromptDialog::PromptDialog(const PromptRequest &req, const QString &sessionName,
     } else {
         auto *buttons = new QDialogButtonBox(this);
         const bool changed = req.kind == PromptRequest::Kind::HostKeyChanged;
-        QPushButton *save = buttons->addButton(changed ? tr("Replace saved key and connect") : tr("Trust and save"),
+        const bool legacy = req.kind == PromptRequest::Kind::LegacyAlgorithms;
+        QPushButton *save = buttons->addButton(changed  ? tr("Replace saved key and connect")
+                                               : legacy ? tr("Always allow for this session")
+                                                        : tr("Trust and save"),
                                                QDialogButtonBox::AcceptRole);
         QPushButton *once = buttons->addButton(tr("Connect once"), QDialogButtonBox::AcceptRole);
         QPushButton *cancel = buttons->addButton(QDialogButtonBox::Cancel);

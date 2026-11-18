@@ -22,6 +22,7 @@ add_library(termx_core STATIC
     session/CredentialStore.cpp session/CredentialStore.h
     util/AppPaths.cpp util/AppPaths.h
     util/JsonFile.cpp util/JsonFile.h
+    util/SecureWipe.cpp util/SecureWipe.h
     util/FuzzyMatch.cpp util/FuzzyMatch.h
 )
 target_include_directories(termx_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

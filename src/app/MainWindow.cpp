@@ -695,6 +695,14 @@ void MainWindow::wireSession(TerminalView *view)
     });
     connect(s, &TerminalSession::titleChanged, this, [this, view] { updateTabFor(view); });
     connect(s, &TerminalSession::promptRequested, this, [this, s](const PromptRequest &req) { showPrompt(s, req); });
+    connect(s, &TerminalSession::legacyAlgorithmsAccepted, this, [this, s] {
+        const QString id = s->config().id;
+        if (const SessionConfig *saved = id.isEmpty() ? nullptr : m_sessions->find(id)) {
+            SessionConfig c = *saved;
+            c.ssh.allowLegacyAlgorithms = true;
+            m_sessions->upsert(c);
+        }
+    });
     connect(s, &TerminalSession::secretAccepted, this, [this, s](const QString &secret) {
         const QString id = s->config().id;
         if (id.isEmpty() || !CredentialStore::isAvailable())

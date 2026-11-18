@@ -14,13 +14,24 @@ SessionType sessionTypeFromName(const QString &name, SessionType fallback = Sess
 
 enum class NewlineMode { CR, LF, CRLF };
 
+// What to do with a host key that is not (or not the same as) in known_hosts.
+enum class HostKeyPolicy {
+    Ask,        // prompt for unknown and changed keys (default)
+    AcceptNew,  // save unknown keys silently, refuse changed keys
+    Strict      // refuse unknown and changed keys
+};
+
+QString hostKeyPolicyName(HostKeyPolicy p);
+HostKeyPolicy hostKeyPolicyFromName(const QString &name);
+
 struct SshOptions {
     QString host;
     int port = 22;
     QString username;
     QString keyFile;                 // private key (OpenSSH / PEM); empty = none
     bool useAgent = true;            // Pageant / OpenSSH agent
-    bool allowLegacyAlgorithms = true;  // old switches/routers: dh-group1, ssh-rsa, cbc
+    bool allowLegacyAlgorithms = false; // old switches/routers: dh-group1, ssh-rsa, cbc (asked on demand)
+    HostKeyPolicy hostKeyPolicy = HostKeyPolicy::Ask;
     int keepAliveSeconds = 30;       // 0 = off
     int connectTimeoutSeconds = 15;
     QString termType = QStringLiteral("xterm-256color");

@@ -87,6 +87,10 @@ void TerminalSession::createTransport()
         Q_EMIT notice(n);
     });
     connect(t, &Transport::secretAccepted, this, &TerminalSession::secretAccepted);
+    connect(t, &Transport::legacyAlgorithmsAccepted, this, [this] {
+        m_cfg.ssh.allowLegacyAlgorithms = true;
+        Q_EMIT legacyAlgorithmsAccepted();
+    });
 }
 
 void TerminalSession::start()

@@ -8,6 +8,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QSpinBox;
 class QStackedWidget;
@@ -44,6 +45,8 @@ private:
     QLineEdit *m_sshKey;
     QCheckBox *m_sshAgent;
     QCheckBox *m_sshLegacy;
+    QLabel *m_sshLegacyWarn;
+    QComboBox *m_sshHostKey;
     QSpinBox *m_sshKeepAlive;
     // Telnet
     QLineEdit *m_telHost;

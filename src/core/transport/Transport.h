@@ -43,7 +43,8 @@ struct PromptRequest {
     enum class Kind {
         Fields,          // one or more text fields (username, password, kbd-interactive)
         HostKeyUnknown,  // first connection to a host: trust this key?
-        HostKeyChanged   // key differs from known_hosts: possible MITM
+        HostKeyChanged,  // key differs from known_hosts: possible MITM
+        LegacyAlgorithms // server needs weak algorithms: allow them?
     };
     quint64 id = 0;
     Kind kind = Kind::Fields;
@@ -103,6 +104,7 @@ Q_SIGNALS:
     void prompt(const termx::PromptRequest &req);
     void notice(const QString &text);
     void secretAccepted(const QString &secret);  // a password the user asked to remember worked
+    void legacyAlgorithmsAccepted();             // user chose to always allow legacy algorithms here
     void finished();
 
 protected:
@@ -159,6 +161,7 @@ Q_SIGNALS:
     void promptRequested(const termx::PromptRequest &req);
     void notice(const QString &text);
     void secretAccepted(const QString &secret);
+    void legacyAlgorithmsAccepted();
 
 protected:
     virtual TransportWorker *createWorker() = 0;
