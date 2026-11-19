@@ -3,7 +3,7 @@
 A fast, stable terminal for network and DevOps work on Windows 10 and 11:
 SSH, Telnet, serial consoles and local shells in one tabbed window.
 
-Current release: **1.0.0**. Download the MSI installer (or the portable zip) from the
+Current release: **1.0.1**. Download the MSI installer (or the portable zip) from the
 [Releases](https://github.com/lekienn89/TermX/releases) page.
 
 ## Features
@@ -64,9 +64,9 @@ current bindings.
 
 ## Installing
 
-`TermX-1.0.0-x64.msi` installs per machine into `C:\Program Files\TermX` with Start menu and
+`TermX-1.0.1-x64.msi` installs per machine into `C:\Program Files\TermX` with Start menu and
 desktop shortcuts, and upgrades earlier versions in place. Silent install:
-`msiexec /i TermX-1.0.0-x64.msi /qn` (add `INSTALLDESKTOPSHORTCUT=0` to skip the desktop icon).
+`msiexec /i TermX-1.0.1-x64.msi /qn` (add `INSTALLDESKTOPSHORTCUT=0` to skip the desktop icon).
 The builds are not code-signed yet, so Windows SmartScreen may ask for confirmation the first time.
 
 ## Command line
@@ -95,7 +95,7 @@ vcpkg installs libssh2 (with OpenSSL) and SQLite automatically from `vcpkg.json`
 To build the installer, install the WiX 5 tool (`dotnet tool install --global wix --version 5.0.2`
 and `wix extension add -g WixToolset.UI.wixext/5.0.2`), deploy the app into `dist\TermX`
 with `windeployqt` as in `.github/workflows/ci.yml`, then run
-`wix build installer/TermX.wxs -arch x64 -ext WixToolset.UI.wixext -d Version=1.0.0 -d RepoDir=. -d DistDir=dist\TermX -o dist\TermX-1.0.0-x64.msi`.
+`wix build installer/TermX.wxs -arch x64 -ext WixToolset.UI.wixext -d Version=1.0.1 -d RepoDir=. -d DistDir=dist\TermX -o dist\TermX-1.0.1-x64.msi`.
 
 A note on the libssh2 version string: the vcpkg port builds the 1.11.1 release from its source
 archive, whose `libssh2.h` still carries the `1.11.1_DEV` label; the code is the 1.11.1 release.
@@ -140,7 +140,7 @@ Team roles:
 - Approvers: [lekienn89](https://github.com/lekienn89)
 
 Every release is approved by hand before it is signed. Releases published before signing was set up
-(1.0.0) are not signed.
+(1.0.0 and 1.0.1) are not signed.
 
 Privacy policy: This program will not transfer any information to other networked systems unless
 specifically requested by the user or the person installing or operating it.
