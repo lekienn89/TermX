@@ -126,6 +126,25 @@ third_party/libvterm vendored libvterm 0.3.3 (MIT)
 tests, fuzz          unit tests (Qt Test) and libFuzzer targets
 ```
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+Only binaries built from this repository by its GitHub Actions workflow on GitHub-hosted runners are signed:
+`TermX.exe` and the MSI installer. Third-party libraries shipped with TermX (Qt, OpenSSL, libssh2, SQLite,
+Microsoft Visual C++ runtime) are not signed by this project.
+
+Team roles:
+
+- Committers and reviewers: [lekienn89](https://github.com/lekienn89)
+- Approvers: [lekienn89](https://github.com/lekienn89)
+
+Every release is approved by hand before it is signed. Releases published before signing was set up
+(1.0.0) are not signed.
+
+Privacy policy: This program will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it.
+
 ## License
 
 GPL-3.0-or-later. See `LICENSE` and `THIRD_PARTY_NOTICES.txt`.
