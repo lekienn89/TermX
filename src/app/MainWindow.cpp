@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "MainWindow.h"
 
+#include <QGuiApplication>
+#include <algorithm>
+#include <QScreen>
+#include <QWindow>
+
 #include "Panels.h"
 #include "PromptDialog.h"
 #include "PreferencesDialog.h"
@@ -169,10 +174,28 @@ MainWindow::MainWindow(bool safeMode, QWidget *parent)
     connect(m_watcher, &SerialPortWatcher::portAdded, this, &MainWindow::onPortAdded);
     m_watcher->start();
 
-    restoreGeometry(m_settings->value(QStringLiteral("window/geometry")).toByteArray());
+    const bool hadGeometry = restoreGeometry(m_settings->value(QStringLiteral("window/geometry")).toByteArray());
     restoreState(m_settings->value(QStringLiteral("window/state")).toByteArray());
-    if (!m_settings->contains(QStringLiteral("window/geometry")))
-        resize(1200, 760);
+    if (!hadGeometry) {
+        // First start: a comfortable size, but never larger than the work
+        // area (small laptop screens, 125-175 % display scaling).
+        QSize sz(1200, 760);
+        if (QScreen *scr = QGuiApplication::primaryScreen()) {
+            const QRect avail = scr->availableGeometry();
+            sz = sz.boundedTo(QSize(avail.width() * 9 / 10, avail.height() * 9 / 10 - 40));
+            resize(sz);
+            move(avail.center() - QPoint(sz.width() / 2, sz.height() / 2 + 20));
+        } else {
+            resize(sz);
+        }
+    }
+    ensureOnScreen();
+    connect(qApp, &QGuiApplication::screenRemoved, this, [this] { scheduleEnsureOnScreen(); });
+    connect(qApp, &QGuiApplication::screenAdded, this, [this](QScreen *s) {
+        connect(s, &QScreen::availableGeometryChanged, this, [this] { scheduleEnsureOnScreen(); });
+    });
+    for (QScreen *s : QGuiApplication::screens())
+        connect(s, &QScreen::availableGeometryChanged, this, [this] { scheduleEnsureOnScreen(); });
 
     if (!warning.isEmpty())
         QTimer::singleShot(0, this, [this, warning] { m_toast->showMessage(tr("Sessions restored"), warning, {}); });
@@ -210,7 +233,7 @@ void MainWindow::createDocks()
     m_historyPanel = new HistoryPanel(m_history, this);
     m_historyDock = new QDockWidget(tr("History"), this);
     m_historyDock->setObjectName(QStringLiteral("dock.history"));
-    m_historyPanel->setMinimumWidth(360);
+    m_historyPanel->setMinimumWidth(260);
     m_historyDock->setWidget(m_historyPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
     m_historyDock->hide();
@@ -1189,7 +1212,64 @@ void MainWindow::showEvent(QShowEvent *e)
         m_shown = true;
         m_watcher->registerWindow(quintptr(winId()));
         Theme::applyTitleBar(this);
+        if (QWindow *w = windowHandle())
+            connect(w, &QWindow::screenChanged, this, [this] { scheduleEnsureOnScreen(); });
+        // The real frame size is known only once the window is on screen.
+        scheduleEnsureOnScreen();
     }
+}
+
+void MainWindow::scheduleEnsureOnScreen()
+{
+    if (m_fitPending)
+        return;
+    m_fitPending = true;
+    QTimer::singleShot(0, this, [this] {
+        m_fitPending = false;
+        ensureOnScreen();
+    });
+}
+
+void MainWindow::ensureOnScreen()
+{
+    if (isMaximized() || isFullScreen() || isMinimized())
+        return;
+    const QRect client = geometry();
+    QRect frame = frameGeometry();
+    QScreen *scr = QGuiApplication::screenAt(frame.center());
+    if (!scr)
+        scr = QGuiApplication::screenAt(QPoint(frame.center().x(), frame.top() + 10));
+    if (!scr)
+        scr = QGuiApplication::primaryScreen();   // saved on a monitor that is gone
+    if (!scr)
+        return;
+    const QRect avail = scr->availableGeometry();
+
+    // Before the native window exists Qt reports no frame: assume a typical
+    // Windows title bar and border so the caption buttons stay reachable.
+    QMargins m(client.left() - frame.left(), client.top() - frame.top(), frame.right() - client.right(),
+               frame.bottom() - client.bottom());
+    if (frame == client)
+        m = QMargins(8, 32, 8, 8);
+
+    const QSize maxClient(avail.width() - m.left() - m.right(), avail.height() - m.top() - m.bottom());
+    if (maxClient.width() < 200 || maxClient.height() < 150)
+        return;
+    const QSize minSize = minimumSizeHint().expandedTo(minimumSize());
+    if (minSize.width() > maxClient.width() || minSize.height() > maxClient.height()) {
+        // The layout cannot shrink enough (very small screen): fill the work area.
+        setWindowState(windowState() | Qt::WindowMaximized);
+        return;
+    }
+    const QSize sz = client.size().boundedTo(maxClient);
+    if (sz != client.size())
+        resize(sz);
+    const int fw = sz.width() + m.left() + m.right();
+    const int fh = sz.height() + m.top() + m.bottom();
+    const int x = std::clamp(frame.left(), avail.left(), avail.left() + avail.width() - fw);
+    const int y = std::clamp(frame.top(), avail.top(), avail.top() + avail.height() - fh);
+    if (x != frame.left() || y != frame.top())
+        move(x, y);   // for a top-level window, move() places the frame
 }
 
 void MainWindow::resizeEvent(QResizeEvent *e)

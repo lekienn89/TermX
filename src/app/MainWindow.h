@@ -50,6 +50,9 @@ protected:
     void changeEvent(QEvent *e) override;
 
 private:
+    // Keeps the whole window, title bar included, inside the screen's work area.
+    void ensureOnScreen();
+    void scheduleEnsureOnScreen();
     void createActions();
     void createDocks();
     void wireSession(TerminalView *view);
@@ -122,6 +125,7 @@ private:
     QAction *m_actLog = nullptr;
     QAction *m_actQuickBar = nullptr;
     bool m_shown = false;
+    bool m_fitPending = false;
     bool m_quitting = false;
 };
 

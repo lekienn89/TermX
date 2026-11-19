@@ -136,6 +136,25 @@ private:
     void storedToCells(const StoredLine &s, std::vector<Cell> &out) const;
     void trimScrollback();
 
+    // libvterm is not re-entrant: resizing or feeding it from inside one of
+    // its own callbacks corrupts its buffers (heap overflow in moverect).
+    // While libvterm is running, notifications to the outside world are
+    // deferred, and nested feed()/resize() calls are queued; everything is
+    // replayed once the outermost call has returned.
+    class Busy;
+    void doResize(int rows, int cols);
+    void finishBusy();
+    void notifyScrollback();
+    int m_busy = 0;
+    int m_notifyDepth = 0;
+    bool m_pendingScrollback = false;
+    bool m_pendingBell = false;
+    bool m_pendingTitle = false;
+    bool m_pendingResize = false;
+    int m_pendingRows = 0;
+    int m_pendingCols = 0;
+    std::string m_queuedInput;
+
     VTerm *m_vt = nullptr;
     VTermScreen *m_screen = nullptr;
     VTermState *m_state = nullptr;
