@@ -107,7 +107,9 @@ void TerminalView::syncScrollBar()
     m_bar->setRange(0, max);
     m_bar->setPageStep(m_session->screen().rows());
     m_bar->setValue(max - m_term->scrollOffset());
-    m_bar->setVisible(max > 0);
+    // Keep the bar's space reserved: showing it the first time output
+    // scrolls would narrow the terminal and resize the remote PTY mid-output.
+    m_bar->setEnabled(max > 0);
     m_syncing = false;
 }
 

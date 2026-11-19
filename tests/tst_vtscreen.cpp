@@ -111,6 +111,71 @@ private slots:
         QVERIFY(row(s, 0).contains(QStringLiteral("ok")) || s.cursor().row >= 0);
     }
 
+    // Regression: the UI shows a scroll bar the first time a line reaches the
+    // scrollback, which narrows the terminal and resizes the screen from
+    // inside libvterm's scroll callback. That corrupted the heap and closed
+    // the app while typing ordinary commands.
+    void resizeFromScrollbackCallbackIsDeferred()
+    {
+        VtScreen s(5, 40, 1000);
+        int calls = 0;
+        bool resized = false;
+        s.onScrollbackChanged = [&] {
+            ++calls;
+            if (!resized) {
+                resized = true;
+                s.resize(5, 37);   // what showing the scroll bar does
+            }
+        };
+        QByteArray out;
+        for (int i = 0; i < 40; ++i)
+            out += "line " + QByteArray::number(i) + " ............................\r\n";
+        feed(s, out);
+        QCOMPARE(s.cols(), 37);
+        QVERIFY(calls >= 1);
+        QVERIFY(s.scrollbackSize() > 0);
+    }
+
+    void callbacksRunAfterLibvtermReturns()
+    {
+        VtScreen s(5, 40, 1000);
+        int bells = 0;
+        QString title;
+        s.onBell = [&] {
+            ++bells;
+            // Feeding from a callback must be safe and keep the order.
+            s.feed("X", 1);
+        };
+        s.onTitle = [&](const QString &t) { title = t; s.resize(4, 30); };
+        s.onScrollbackChanged = [&] { s.clearScrollback(); };
+        feed(s, "\x1b]2;hello\x07" "a\x07" "b\r\n\r\n\r\n\r\n\r\n\r\nend");
+        QCOMPARE(bells, 1);
+        QCOMPARE(title, QStringLiteral("hello"));
+        QCOMPARE(s.rows(), 4);
+        QCOMPARE(s.cols(), 30);
+        QCOMPARE(s.scrollbackSize(), 0);
+        bool sawX = false;
+        for (qint64 l = s.firstAvailableLine(); l < s.firstScreenLine() + s.rows(); ++l)
+            sawX = sawX || s.lineText(l).contains(QLatin1Char('X'));
+        QVERIFY(sawX);
+    }
+
+    void resizeStormDuringOutputIsSafe()
+    {
+        VtScreen s(24, 80, 500);
+        int n = 0;
+        s.onScrollbackChanged = [&] {
+            if (++n < 500)
+                s.resize(10 + n % 20, 20 + (n * 7) % 100);
+        };
+        QByteArray out;
+        for (int i = 0; i < 3000; ++i)
+            out += "\x1b[3" + QByteArray::number(i % 8) + "mrow " + QByteArray::number(i) + " \xe4\xb8\xad\xe6\x96\x87 text\r\n";
+        for (int i = 0; i < out.size(); i += 777)
+            feed(s, out.mid(i, 777));
+        QVERIFY(s.rows() >= 1);
+    }
+
     void garbageDoesNotCrash()
     {
         VtScreen s(24, 80, 1000);

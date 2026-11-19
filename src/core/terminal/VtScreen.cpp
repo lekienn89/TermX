@@ -76,10 +76,32 @@ VtScreen::~VtScreen()
         vterm_free(m_vt);
 }
 
+class VtScreen::Busy {
+public:
+    explicit Busy(VtScreen *s) : m_s(s) { ++m_s->m_busy; }
+    ~Busy()
+    {
+        if (--m_s->m_busy == 0)
+            m_s->finishBusy();
+    }
+    Busy(const Busy &) = delete;
+    Busy &operator=(const Busy &) = delete;
+
+private:
+    VtScreen *m_s;
+};
+
 void VtScreen::feed(const char *bytes, size_t len)
 {
     if (!len)
         return;
+    if (m_busy) {
+        // Called from inside a libvterm callback (e.g. a local notice written
+        // while answering the host): parse it after the current input.
+        m_queuedInput.append(bytes, len);
+        return;
+    }
+    Busy busy(this);
     vterm_input_write(m_vt, bytes, len);
     vterm_screen_flush_damage(m_screen);
 }
@@ -88,6 +110,75 @@ void VtScreen::resize(int rows, int cols)
 {
     rows = std::clamp(rows, 1, kMaxRows);
     cols = std::clamp(cols, 1, kMaxCols);
+    if (m_busy) {
+        m_pendingResize = true;
+        m_pendingRows = rows;
+        m_pendingCols = cols;
+        return;
+    }
+    Busy busy(this);
+    doResize(rows, cols);
+}
+
+void VtScreen::finishBusy()
+{
+    // Runs with m_busy == 0. Anything below may call back into feed() or
+    // resize(), which then run directly (and finish their own work).
+    for (int guard = 0; guard < 64; ++guard) {
+        if (m_pendingResize) {
+            m_pendingResize = false;
+            Busy busy(this);
+            doResize(m_pendingRows, m_pendingCols);
+            continue;
+        }
+        if (!m_queuedInput.empty()) {
+            std::string input;
+            input.swap(m_queuedInput);
+            Busy busy(this);
+            vterm_input_write(m_vt, input.data(), input.size());
+            vterm_screen_flush_damage(m_screen);
+            continue;
+        }
+        break;
+    }
+    // A callback that keeps resizing from inside its own notification would
+    // otherwise recurse forever; leave the rest for the next call.
+    if (m_notifyDepth >= 4)
+        return;
+    struct DepthGuard {
+        int &d;
+        explicit DepthGuard(int &x) : d(x) { ++d; }
+        ~DepthGuard() { --d; }
+    } depth(m_notifyDepth);
+    if (m_pendingTitle) {
+        m_pendingTitle = false;
+        if (onTitle)
+            onTitle(m_title);
+    }
+    if (m_pendingBell) {
+        m_pendingBell = false;
+        if (onBell)
+            onBell();
+    }
+    if (m_pendingScrollback) {
+        m_pendingScrollback = false;
+        if (onScrollbackChanged)
+            onScrollbackChanged();
+    }
+}
+
+void VtScreen::notifyScrollback()
+{
+    if (m_busy) {
+        m_pendingScrollback = true;
+        return;
+    }
+    if (onScrollbackChanged)
+        onScrollbackChanged();
+}
+
+void VtScreen::doResize(int rows, int cols)
+{
     if (rows == m_rows && cols == m_cols)
         return;
     m_rows = rows;
@@ -114,16 +205,17 @@ void VtScreen::trimScrollback()
         m_scrollback.pop_front();
         changed = true;
     }
-    if (changed && onScrollbackChanged)
-        onScrollbackChanged();
+    if (changed)
+        notifyScrollback();
 }
 
 void VtScreen::clearScrollback()
 {
+    if (m_scrollback.empty())
+        return;
     m_scrollback.clear();
     m_dirty = true;
-    if (onScrollbackChanged)
-        onScrollbackChanged();
+    notifyScrollback();
 }
 
 void VtScreen::convertCell(const void *vc, Cell &out) const
@@ -250,11 +342,13 @@ bool VtScreen::lineContinuesNext(qint64 absLine) const
 
 void VtScreen::keyboardKey(int key, int mods)
 {
+    Busy busy(this);
     vterm_keyboard_key(m_vt, static_cast<VTermKey>(key), toMods(mods));
 }
 
 void VtScreen::keyboardChar(uint32_t ch, int mods)
 {
+    Busy busy(this);
     vterm_keyboard_unichar(m_vt, ch, toMods(mods));
 }
 
@@ -276,6 +370,7 @@ void VtScreen::focusOut() { vterm_state_focus_out(m_state); }
 
 void VtScreen::reset()
 {
+    Busy busy(this);
     vterm_screen_reset(m_screen, 1);
     m_dirty = true;
 }
@@ -336,8 +431,7 @@ int VtScreen::cbSetTermProp(int prop, const void *v)
             m_titleBuf.append(f.str, std::min<size_t>(f.len, 1024 - m_titleBuf.size()));
         if (f.final) {
             m_title = QString::fromUtf8(m_titleBuf.data(), int(m_titleBuf.size())).left(256);
-            if (onTitle)
-                onTitle(m_title);
+            m_pendingTitle = true;   // reported once libvterm has returned
         }
         break;
     }
@@ -349,8 +443,7 @@ int VtScreen::cbSetTermProp(int prop, const void *v)
 
 int VtScreen::cbBell()
 {
-    if (onBell)
-        onBell();
+    m_pendingBell = true;   // reported once libvterm has returned
     return 1;
 }
 
@@ -385,8 +478,7 @@ int VtScreen::cbPushLine(int cols, const void *cellsPtr)
     if (int(m_scrollback.size()) > m_limit)
         m_scrollback.pop_front();
     m_dirty = true;
-    if (onScrollbackChanged)
-        onScrollbackChanged();
+    notifyScrollback();
     return 1;
 }
 
@@ -438,8 +530,7 @@ int VtScreen::cbPopLine(int cols, void *cellsPtr)
             vterm_color_rgb(&dst.bg, uint8_t(c.bg >> 16), uint8_t(c.bg >> 8), uint8_t(c.bg));
     }
     m_dirty = true;
-    if (onScrollbackChanged)
-        onScrollbackChanged();
+    notifyScrollback();
     return 1;
 }
 
