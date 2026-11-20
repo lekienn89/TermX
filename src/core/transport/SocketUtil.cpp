@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#ifdef _WIN32
+// Windows fd_set is a counted array: raise the limit for many tunnels.
+#define FD_SETSIZE 1024
+#endif
 #include "SocketUtil.h"
 
 #include <QByteArray>
 #include <QDeadlineTimer>
+#include <cstring>
 #include <mutex>
 
 #ifdef _WIN32
@@ -263,6 +268,294 @@ int waitSocket(socket_t s, bool forRead, bool forWrite, const Waker &waker, int 
         r |= WaitWoken;
     if (s != kInvalidSocket && (FD_ISSET(s, &rfds) || FD_ISSET(s, &wfds)))
         r |= WaitSocket;
+    return r;
+}
+
+bool resolve(const QString &host, uint16_t port, bool passive, std::vector<Address> &out, QString &err)
+{
+    initialize();
+    out.clear();
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    if (passive)
+        hints.ai_flags = AI_PASSIVE;
+    addrinfo *res = nullptr;
+    const QByteArray hostUtf8 = host.trimmed().toUtf8();
+    const QByteArray portStr = QByteArray::number(port);
+    const int gai = getaddrinfo(hostUtf8.isEmpty() ? nullptr : hostUtf8.constData(), portStr.constData(), &hints, &res);
+    if (gai != 0 || !res) {
+#ifdef _WIN32
+        err = QStringLiteral("Cannot resolve \"%1\": %2").arg(host, errorString(gai));
+#else
+        err = QStringLiteral("Cannot resolve \"%1\": %2").arg(host, QString::fromLocal8Bit(gai_strerror(gai)));
+#endif
+        return false;
+    }
+    for (addrinfo *ai = res; ai; ai = ai->ai_next) {
+        if (ai->ai_addrlen > sizeof(Address::storage))
+            continue;
+        Address a;
+        std::memcpy(a.storage, ai->ai_addr, ai->ai_addrlen);
+        a.length = int(ai->ai_addrlen);
+        a.family = ai->ai_family;
+        out.push_back(a);
+    }
+    freeaddrinfo(res);
+    if (out.empty()) {
+        err = QStringLiteral("No usable address for \"%1\"").arg(host);
+        return false;
+    }
+    return true;
+}
+
+QString addressToString(const Address &a)
+{
+    char host[NI_MAXHOST] = {};
+    char serv[NI_MAXSERV] = {};
+    if (getnameinfo(reinterpret_cast<const sockaddr *>(a.storage), socklen_t(a.length), host, sizeof(host), serv,
+                    sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV) != 0)
+        return QStringLiteral("?");
+    const QString h = QString::fromLatin1(host);
+    return (h.contains(QLatin1Char(':')) ? QLatin1Char('[') + h + QLatin1Char(']') : h) + QLatin1Char(':')
+           + QString::fromLatin1(serv);
+}
+
+socket_t tcpListen(const QString &bindAddress, uint16_t port, QString &err, uint16_t *boundPort)
+{
+    std::vector<Address> addrs;
+    if (!resolve(bindAddress, port, true, addrs, err))
+        return kInvalidSocket;
+    for (const Address &a : addrs) {
+        socket_t s = ::socket(a.family, SOCK_STREAM, IPPROTO_TCP);
+        if (s == kInvalidSocket) {
+            err = lastErrorString();
+            continue;
+        }
+        int one = 1;
+#ifdef _WIN32
+        setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&one), sizeof(one));
+#else
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&one), sizeof(one));
+#endif
+        if (::bind(s, reinterpret_cast<const sockaddr *>(a.storage), socklen_t(a.length)) != 0
+            || ::listen(s, 64) != 0 || !setNonBlocking(s)) {
+            err = QStringLiteral("Cannot listen on %1: %2").arg(addressToString(a), lastErrorString());
+            closeSocket(s);
+            continue;
+        }
+        if (boundPort) {
+            Address local;
+            socklen_t len = sizeof(local.storage);
+            *boundPort = port;
+            if (getsockname(s, reinterpret_cast<sockaddr *>(local.storage), &len) == 0) {
+                local.length = int(len);
+                const auto *sa = reinterpret_cast<const sockaddr *>(local.storage);
+                if (sa->sa_family == AF_INET)
+                    *boundPort = ntohs(reinterpret_cast<const sockaddr_in *>(local.storage)->sin_port);
+                else if (sa->sa_family == AF_INET6)
+                    *boundPort = ntohs(reinterpret_cast<const sockaddr_in6 *>(local.storage)->sin6_port);
+            }
+        }
+        return s;
+    }
+    return kInvalidSocket;
+}
+
+socket_t tcpAccept(socket_t listener, QString *peer)
+{
+    Address a;
+    socklen_t len = sizeof(a.storage);
+    socket_t s = ::accept(listener, reinterpret_cast<sockaddr *>(a.storage), &len);
+    if (s == kInvalidSocket)
+        return kInvalidSocket;
+    a.length = int(len);
+    setNonBlocking(s);
+    int one = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&one), sizeof(one));
+    if (peer)
+        *peer = addressToString(a);
+    return s;
+}
+
+socket_t tcpConnectStart(const Address &a, QString &err)
+{
+    socket_t s = ::socket(a.family, SOCK_STREAM, IPPROTO_TCP);
+    if (s == kInvalidSocket) {
+        err = lastErrorString();
+        return kInvalidSocket;
+    }
+    setNonBlocking(s);
+    int one = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&one), sizeof(one));
+    const int rc = ::connect(s, reinterpret_cast<const sockaddr *>(a.storage), socklen_t(a.length));
+    if (rc != 0 && !wouldBlock(lastError())) {
+        err = QStringLiteral("Cannot connect to %1: %2").arg(addressToString(a), lastErrorString());
+        closeSocket(s);
+        return kInvalidSocket;
+    }
+    return s;
+}
+
+int pollConnect(socket_t s)
+{
+#ifndef _WIN32
+    if (s < 0 || s >= FD_SETSIZE)
+        return EMFILE;
+#endif
+    fd_set wfds, efds;
+    FD_ZERO(&wfds);
+    FD_ZERO(&efds);
+    FD_SET(s, &wfds);
+    FD_SET(s, &efds);
+    timeval tv{0, 0};
+    const int n = ::select(static_cast<int>(s + 1), nullptr, &wfds, &efds, &tv);
+    if (n < 0)
+        return lastError() ? lastError() : 1;
+    if (n == 0)
+        return -1;
+    int soErr = 0;
+#ifdef _WIN32
+    int len = sizeof(soErr);
+#else
+    socklen_t len = sizeof(soErr);
+#endif
+    if (getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&soErr), &len) != 0)
+        return lastError() ? lastError() : 1;
+    if (soErr != 0)
+        return wouldBlock(soErr) ? -1 : soErr;
+    // Windows reports a failed connect through the exception set.
+    return FD_ISSET(s, &efds) ? 1 : 0;
+}
+
+QString errorText(int code)
+{
+    return errorString(code);
+}
+
+long recvSome(socket_t s, char *buf, size_t len)
+{
+#ifdef _WIN32
+    const int n = ::recv(s, buf, int(qMin<size_t>(len, 1 << 30)), 0);
+#else
+    const ssize_t n = ::recv(s, buf, len, 0);
+#endif
+    if (n >= 0)
+        return long(n);
+    const int e = lastError();
+#ifndef _WIN32
+    if (e == EINTR)
+        return IoWouldBlock;
+#endif
+    return wouldBlock(e) ? IoWouldBlock : IoError;
+}
+
+long sendSome(socket_t s, const char *buf, size_t len)
+{
+#ifdef _WIN32
+    const int n = ::send(s, buf, int(qMin<size_t>(len, 1 << 30)), 0);
+#elif defined(MSG_NOSIGNAL)
+    const ssize_t n = ::send(s, buf, len, MSG_NOSIGNAL);
+#else
+    const ssize_t n = ::send(s, buf, len, 0);
+#endif
+    if (n >= 0)
+        return long(n);
+    const int e = lastError();
+#ifndef _WIN32
+    if (e == EINTR)
+        return IoWouldBlock;
+#endif
+    return wouldBlock(e) ? IoWouldBlock : IoError;
+}
+
+void shutdownWrite(socket_t s)
+{
+#ifdef _WIN32
+    ::shutdown(s, SD_SEND);
+#else
+    ::shutdown(s, SHUT_WR);
+#endif
+}
+
+void shutdownBoth(socket_t s)
+{
+    if (s == kInvalidSocket)
+        return;
+#ifdef _WIN32
+    ::shutdown(s, SD_BOTH);
+#else
+    ::shutdown(s, SHUT_RDWR);
+#endif
+}
+
+int maxPollItems()
+{
+    return FD_SETSIZE - 8;
+}
+
+int waitMany(std::vector<PollItem> &items, const Waker &waker, int timeoutMs)
+{
+    fd_set rfds, wfds, efds;
+    FD_ZERO(&rfds);
+    FD_ZERO(&wfds);
+    FD_ZERO(&efds);
+    socket_t maxFd = 0;
+    int used = 0;
+    const int limit = maxPollItems();
+    for (PollItem &it : items) {
+        it.readable = it.writable = it.failed = false;
+        if (it.s == kInvalidSocket || (!it.wantRead && !it.wantWrite) || used >= limit)
+            continue;
+#ifndef _WIN32
+        if (it.s >= FD_SETSIZE)
+            continue;
+#endif
+        ++used;
+        if (it.wantRead)
+            FD_SET(it.s, &rfds);
+        if (it.wantWrite) {
+            FD_SET(it.s, &wfds);
+            FD_SET(it.s, &efds);
+        }
+        if (it.s > maxFd)
+            maxFd = it.s;
+    }
+    if (waker.isValid()) {
+        FD_SET(waker.fd(), &rfds);
+        if (waker.fd() > maxFd)
+            maxFd = waker.fd();
+    }
+    timeval tv;
+    tv.tv_sec = timeoutMs / 1000;
+    tv.tv_usec = (timeoutMs % 1000) * 1000;
+    const int n = ::select(static_cast<int>(maxFd + 1), &rfds, &wfds, &efds, &tv);
+    if (n < 0) {
+#ifndef _WIN32
+        if (errno == EINTR)
+            return WaitTimeout;
+#endif
+        return WaitError;
+    }
+    if (n == 0)
+        return WaitTimeout;
+    int r = 0;
+    if (waker.isValid() && FD_ISSET(waker.fd(), &rfds))
+        r |= WaitWoken;
+    for (PollItem &it : items) {
+        if (it.s == kInvalidSocket)
+            continue;
+#ifndef _WIN32
+        if (it.s >= FD_SETSIZE)
+            continue;
+#endif
+        it.readable = it.wantRead && FD_ISSET(it.s, &rfds);
+        it.writable = it.wantWrite && FD_ISSET(it.s, &wfds);
+        it.failed = it.wantWrite && FD_ISSET(it.s, &efds);
+        if (it.readable || it.writable || it.failed)
+            r |= WaitSocket;
+    }
     return r;
 }
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "SessionDialog.h"
+#include "ForwardWidgets.h"
 
 #include "transport/LocalShellTransport.h"
 
@@ -104,6 +105,8 @@ SessionDialog::SessionDialog(const SessionConfig &cfg, const QStringList &folder
     sf->addRow(QString(), m_sshLegacy);
     sf->addRow(QString(), m_sshLegacyWarn);
     sf->addRow(tr("Keep-alive"), m_sshKeepAlive);
+    m_sshForwards = new ForwardRulesEditor(ssh);
+    sf->addRow(tr("Port forwarding"), m_sshForwards);
     m_stack->addWidget(ssh);
 
     // --- Serial page ---
@@ -249,6 +252,7 @@ void SessionDialog::load(const SessionConfig &c)
     m_sshLegacyWarn->setVisible(c.ssh.allowLegacyAlgorithms);
     m_sshHostKey->setCurrentIndex(qMax(0, m_sshHostKey->findData(int(c.ssh.hostKeyPolicy))));
     m_sshKeepAlive->setValue(c.ssh.keepAliveSeconds);
+    m_sshForwards->setRules(c.ssh.forwards);
 
     m_telHost->setText(c.telnet.host);
     m_telPort->setValue(c.telnet.port);
@@ -305,6 +309,7 @@ SessionConfig SessionDialog::config() const
     c.ssh.allowLegacyAlgorithms = m_sshLegacy->isChecked();
     c.ssh.hostKeyPolicy = HostKeyPolicy(m_sshHostKey->currentData().toInt());
     c.ssh.keepAliveSeconds = m_sshKeepAlive->value();
+    c.ssh.forwards = m_sshForwards->rules();
 
     c.telnet.host = m_telHost->text().trimmed();
     c.telnet.port = m_telPort->value();

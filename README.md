@@ -3,7 +3,7 @@
 A fast, stable terminal for network and DevOps work on Windows 10 and 11:
 SSH, Telnet, serial consoles and local shells in one tabbed window.
 
-Current release: **1.0.1**. Download the MSI installer (or the portable zip) from the
+Current release: **1.1.0**. Download the MSI installer (or the portable zip) from the
 [Releases](https://github.com/lekienn89/TermX/releases) page.
 
 ## Features
@@ -13,6 +13,16 @@ Current release: **1.0.1**. Download the MSI installer (or the portable zip) fro
   strict), keep-alive. Modern algorithms only by default (curve25519, Ed25519, AES-GCM/CTR, and
   chacha20-poly1305 when the libssh2 build has it); when an old switch needs SHA-1 key exchange,
   ssh-rsa or CBC, TermX asks before using them and can remember the choice for that session.
+- **SFTP browser** (Ctrl+Shift+O) over the same SSH connection as the terminal, with no second
+  login: browse, upload and download files and whole folders (drag and drop works), rename,
+  delete, change permissions, and `cd` the terminal into a folder. Transfers run in a queue with
+  progress and can be cancelled; downloads go to a temporary file first, so a cancelled or failed
+  transfer never leaves a half-written file behind.
+- **SSH port forwarding**: local (`-L`), remote (`-R`) and dynamic SOCKS 4/4a/5 (`-D`) tunnels.
+  Save rules with a session, or start and stop them live from the Port Forwarding panel
+  (Ctrl+Shift+J), which shows open connections and traffic per tunnel. Rules are also read from
+  Quick Connect (`ssh -L 8080:db:80 host`), PuTTY sessions and `LocalForward`/`RemoteForward`/
+  `DynamicForward` in `~/.ssh/config`.
 - **Telnet** with full option negotiation (NAWS, terminal type, echo, binary) and **raw TCP**.
 - **Serial** consoles with **automatic detection of USB console cables**: plug a cable in and TermX
   offers to open it (or opens it automatically, or reconnects the tab that was waiting for it).
@@ -52,6 +62,8 @@ Current release: **1.0.1**. Download the MSI installer (or the portable zip) fro
 | Find | Ctrl+Shift+F |
 | History panel | Ctrl+Shift+H |
 | Snippets panel | Ctrl+Shift+S |
+| SFTP browser | Ctrl+Shift+O |
+| Port forwarding panel | Ctrl+Shift+J |
 | Broadcast input to this tab | Ctrl+Shift+I |
 | Log to file | Ctrl+Shift+L |
 | Preferences | Ctrl+, |
@@ -64,9 +76,9 @@ current bindings.
 
 ## Installing
 
-`TermX-1.0.1-x64.msi` installs per machine into `C:\Program Files\TermX` with Start menu and
+`TermX-1.1.0-x64.msi` installs per machine into `C:\Program Files\TermX` with Start menu and
 desktop shortcuts, and upgrades earlier versions in place. Silent install:
-`msiexec /i TermX-1.0.1-x64.msi /qn` (add `INSTALLDESKTOPSHORTCUT=0` to skip the desktop icon).
+`msiexec /i TermX-1.1.0-x64.msi /qn` (add `INSTALLDESKTOPSHORTCUT=0` to skip the desktop icon).
 The builds are not code-signed yet, so Windows SmartScreen may ask for confirmation the first time.
 
 ## Command line
@@ -95,7 +107,7 @@ vcpkg installs libssh2 (with OpenSSL) and SQLite automatically from `vcpkg.json`
 To build the installer, install the WiX 5 tool (`dotnet tool install --global wix --version 5.0.2`
 and `wix extension add -g WixToolset.UI.wixext/5.0.2`), deploy the app into `dist\TermX`
 with `windeployqt` as in `.github/workflows/ci.yml`, then run
-`wix build installer/TermX.wxs -arch x64 -ext WixToolset.UI.wixext -d Version=1.0.1 -d RepoDir=. -d DistDir=dist\TermX -o dist\TermX-1.0.1-x64.msi`.
+`wix build installer/TermX.wxs -arch x64 -ext WixToolset.UI.wixext -d Version=1.1.0 -d RepoDir=. -d DistDir=dist\TermX -o dist\TermX-1.1.0-x64.msi`.
 
 A note on the libssh2 version string: the vcpkg port builds the 1.11.1 release from its source
 archive, whose `libssh2.h` still carries the `1.11.1_DEV` label; the code is the 1.11.1 release.
@@ -124,7 +136,12 @@ src/core/session     session configuration, saved sessions, DPAPI credentials
 src/app              Qt Widgets user interface
 third_party/libvterm vendored libvterm 0.3.3 (MIT)
 tests, fuzz          unit tests (Qt Test) and libFuzzer targets
+docs                 feature comparison with other terminals
 ```
+
+On Linux, `tst_sshintegration` starts a private OpenSSH server (`openssh-server` package) on a
+free local port and tests the shell, SFTP and all three kinds of forwarding against it; it is
+skipped when `sshd` is not installed.
 
 ## Code signing policy
 

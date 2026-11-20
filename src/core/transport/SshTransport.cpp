@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "SshTransport.h"
+#include "SftpEngine.h"
 #include "SocketUtil.h"
+#include "SshContext.h"
+#include "SshForwarding.h"
 #include "util/SecureWipe.h"
 
 #include <QCryptographicHash>
@@ -14,8 +17,20 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <set>
 
 namespace termx {
+
+// Requests from the GUI thread to the SSH I/O thread.
+struct SshControl {
+    std::mutex mx;
+    std::deque<SftpRequest> sftp;
+    std::set<quint64> cancelled;
+    std::vector<std::pair<quint64, PortForward>> adds;
+    std::vector<quint64> removes;
+    bool finished = false;              // the worker is gone: fail new requests at once
+    std::atomic<quint64> nextId{1};
+};
 
 namespace {
 
@@ -80,11 +95,20 @@ QString hostKeyTypeName(int t)
 }
 
 class SshWorker : public TransportWorker {
+    Q_OBJECT
 public:
-    SshWorker(SshOptions o, QString password, QString knownHosts)
-        : m_opts(std::move(o)), m_password(std::move(password)), m_knownHosts(std::move(knownHosts))
+    SshWorker(SshOptions o, QString password, QString knownHosts, std::shared_ptr<SshControl> control)
+        : m_opts(std::move(o)), m_password(std::move(password)), m_knownHosts(std::move(knownHosts)),
+          m_control(std::move(control))
     {
     }
+
+Q_SIGNALS:
+    void sftpProgress(const termx::SftpProgress &progress);
+    void sftpFinished(const termx::SftpResult &result);
+    void forwardsChanged(const QVector<termx::ForwardStatus> &all);
+
+public:
 
     ~SshWorker() override
     {
@@ -99,6 +123,7 @@ public:
     void start() override
     {
         run();
+        closeControl();
         cleanup();
         finish();
     }
@@ -115,6 +140,7 @@ private:
     // ---- helpers -----------------------------------------------------------
     bool fail(const QString &msg)
     {
+        m_exitReason = msg;
         setState(TransportState::Failed, msg);
         return false;
     }
@@ -148,16 +174,23 @@ private:
 
     void cleanup()
     {
-        if (m_channel) {
-            libssh2_channel_free(m_channel);
-            m_channel = nullptr;
-        }
         if (m_session) {
             // Non-blocking disconnect: a dead peer must not hang us.
             libssh2_session_set_blocking(m_session, 0);
             libssh2_session_disconnect(m_session, "Normal shutdown");
-            libssh2_session_free(m_session);
+            // Freeing channels waits for the server's CLOSE, which in
+            // non-blocking mode means EAGAIN and a leaked session. With the
+            // socket shut down every send/receive fails at once instead, so
+            // libssh2 releases everything without network round trips.
+            net::shutdownBoth(m_sock);
+            if (m_channel)
+                libssh2_channel_free(m_channel);
+            m_channel = nullptr;
+            for (int i = 0; i < 8 && libssh2_session_free(m_session) == LIBSSH2_ERROR_EAGAIN; ++i) {
+            }
             m_session = nullptr;
+        } else if (m_channel) {
+            m_channel = nullptr;
         }
         if (m_sock != net::kInvalidSocket) {
             net::closeSocket(m_sock);
@@ -676,89 +709,229 @@ private:
         return true;
     }
 
-    void pump()
+    // ---- control requests --------------------------------------------------
+    void takeControl(ssh::ForwardEngine &fwd, ssh::SftpEngine &sftp)
     {
-        std::deque<QByteArray> pending;
-        qsizetype pendingOffset = 0;
-        QByteArray buf(32 * 1024, Qt::Uninitialized);
-        QString exitReason;
+        std::vector<std::pair<quint64, PortForward>> adds;
+        std::vector<quint64> removes;
+        std::deque<SftpRequest> reqs;
+        {
+            std::lock_guard<std::mutex> lock(m_control->mx);
+            adds.swap(m_control->adds);
+            removes.swap(m_control->removes);
+            reqs.swap(m_control->sftp);
+        }
+        for (const auto &a : adds)
+            fwd.add(a.first, a.second);
+        for (quint64 id : removes)
+            fwd.remove(id);
+        for (const SftpRequest &r : reqs)
+            sftp.submit(r);
+    }
 
-        while (!stopRequested()) {
-            // Resize.
-            if (m_shared->resizePending.exchange(false)) {
-                m_cols = m_shared->cols.load();
-                m_rows = m_shared->rows.load();
-                m_resizeDirty = true;
-            }
-            if (m_resizeDirty) {
-                const int rc = libssh2_channel_request_pty_size(m_channel, m_cols, m_rows);
-                if (rc != LIBSSH2_ERROR_EAGAIN)
-                    m_resizeDirty = false;
-            }
+    // The worker is going away: answer whatever is still queued.
+    void closeControl()
+    {
+        std::deque<SftpRequest> left;
+        {
+            std::lock_guard<std::mutex> lock(m_control->mx);
+            m_control->finished = true;
+            left.swap(m_control->sftp);
+            m_control->adds.clear();
+            m_control->removes.clear();
+        }
+        const QString why = m_exitReason.isEmpty() ? QStringLiteral("Not connected") : m_exitReason;
+        for (const SftpRequest &r : left) {
+            SftpResult res;
+            res.id = r.id;
+            res.op = r.op;
+            res.path = r.path;
+            res.localPath = r.localPath;
+            res.error = why;
+            Q_EMIT sftpFinished(res);
+        }
+        Q_EMIT forwardsChanged({});
+    }
 
-            // Writes.
-            takeWrites(pending);
-            bool writeBlocked = false;
-            while (!pending.empty()) {
-                const QByteArray &chunk = pending.front();
-                const ssize_t n = libssh2_channel_write(m_channel, chunk.constData() + pendingOffset,
-                                                        size_t(chunk.size() - pendingOffset));
-                if (n == LIBSSH2_ERROR_EAGAIN) {
-                    writeBlocked = true;
-                    break;
-                }
-                if (n < 0) {
-                    exitReason = QStringLiteral("Write failed: %1").arg(sshError(m_session));
-                    break;
-                }
-                pendingOffset += n;
-                if (pendingOffset >= chunk.size()) {
-                    pending.pop_front();
-                    pendingOffset = 0;
-                }
-            }
-            if (!exitReason.isEmpty())
-                break;
+    bool sftpCancelled(quint64 id)
+    {
+        std::lock_guard<std::mutex> lock(m_control->mx);
+        return m_control->cancelled.count(id) != 0;
+    }
 
-            // Reads (paused while the UI is behind -> SSH window applies back-pressure).
-            bool readError = false;
-            if (!flowBlocked()) {
-                for (int stream = 0; stream < 2 && !readError; ++stream) {
-                    for (int guard = 0; guard < 64; ++guard) {
-                        const ssize_t n = libssh2_channel_read_ex(m_channel, stream, buf.data(), size_t(buf.size()));
-                        if (n > 0) {
-                            emitData(QByteArray(buf.constData(), int(n)));
-                            continue;
-                        }
-                        if (n == LIBSSH2_ERROR_EAGAIN || n == 0)
-                            break;
-                        exitReason = QStringLiteral("Connection lost: %1").arg(sshError(m_session));
-                        readError = true;
-                        break;
+    // ---- shell ---------------------------------------------------------------
+    // Resumable: when a libssh2 call leaves a packet half-sent, the next turn
+    // starts with that same call (see SshContext.h).
+    enum class ShellStep { Idle, Moved, Exit };
+
+    ShellStep stepShell(ssh::Context &ctx, QString &exitReason)
+    {
+        const void *tag = &m_shellPhase;
+        if (!ctx.mayRun(tag))
+            return ShellStep::Idle;
+        bool moved = false;
+        for (;;) {
+            switch (m_shellPhase) {
+            case 0: {   // resize
+                if (m_shared->resizePending.exchange(false)) {
+                    m_cols = m_shared->cols.load();
+                    m_rows = m_shared->rows.load();
+                    m_resizeDirty = true;
+                }
+                if (m_resizeDirty) {
+                    const int rc = libssh2_channel_request_pty_size(m_channel, m_cols, m_rows);
+                    ctx.after(tag, rc);
+                    if (rc == LIBSSH2_ERROR_EAGAIN) {
+                        if (ctx.owner == tag)
+                            return moved ? ShellStep::Moved : ShellStep::Idle;
+                    } else {
+                        m_resizeDirty = false;
                     }
                 }
-            }
-            if (readError)
-                break;
-            if (libssh2_channel_eof(m_channel)) {
-                int code = libssh2_channel_get_exit_status(m_channel);
-                exitReason = QStringLiteral("Session closed by remote host (exit status %1)").arg(code);
+                m_shellPhase = 1;
                 break;
             }
+            case 1: {   // keyboard -> server
+                takeWrites(m_pendingWrites);
+                m_writeBlocked = false;
+                while (!m_pendingWrites.empty()) {
+                    const QByteArray &chunk = m_pendingWrites.front();
+                    const ssize_t n = libssh2_channel_write(m_channel, chunk.constData() + m_pendingOffset,
+                                                            size_t(chunk.size() - m_pendingOffset));
+                    ctx.after(tag, n < 0 ? long(n) : 0);
+                    if (n == LIBSSH2_ERROR_EAGAIN) {
+                        m_writeBlocked = true;
+                        if (ctx.owner == tag)
+                            return moved ? ShellStep::Moved : ShellStep::Idle;
+                        break;
+                    }
+                    if (n < 0) {
+                        exitReason = QStringLiteral("Write failed: %1").arg(ssh::lastError(m_session));
+                        return ShellStep::Exit;
+                    }
+                    moved = true;
+                    m_pendingOffset += n;
+                    if (m_pendingOffset >= chunk.size()) {
+                        m_pendingWrites.pop_front();
+                        m_pendingOffset = 0;
+                    }
+                }
+                m_shellPhase = 2;
+                m_shellStream = 0;
+                break;
+            }
+            case 2: {   // server -> screen (paused while the UI is behind: SSH window applies back-pressure)
+                if (!flowBlocked()) {
+                    for (; m_shellStream < 2; ++m_shellStream) {
+                        for (int guard = 0; guard < 64; ++guard) {
+                            const ssize_t n = libssh2_channel_read_ex(m_channel, m_shellStream, m_readBuf.data(),
+                                                                      size_t(m_readBuf.size()));
+                            ctx.after(tag, n < 0 ? long(n) : 0);
+                            if (n > 0) {
+                                emitData(QByteArray(m_readBuf.constData(), int(n)));
+                                moved = true;
+                                if (flowBlocked())
+                                    break;
+                                continue;
+                            }
+                            if (n == LIBSSH2_ERROR_EAGAIN && ctx.owner == tag)
+                                return moved ? ShellStep::Moved : ShellStep::Idle;
+                            if (n == LIBSSH2_ERROR_EAGAIN || n == 0)
+                                break;
+                            exitReason = QStringLiteral("Connection lost: %1").arg(ssh::lastError(m_session));
+                            return ShellStep::Exit;
+                        }
+                    }
+                }
+                m_shellPhase = 3;
+                break;
+            }
+            default: {  // end of session?
+                m_shellPhase = 0;
+                if (libssh2_channel_eof(m_channel) == 1) {
+                    const int code = libssh2_channel_get_exit_status(m_channel);
+                    exitReason = QStringLiteral("Session closed by remote host (exit status %1)").arg(code);
+                    return ShellStep::Exit;
+                }
+                return moved ? ShellStep::Moved : ShellStep::Idle;
+            }
+            }
+        }
+    }
 
-            int nextKeepAlive = 30;
-            if (m_opts.keepAliveSeconds > 0) {
+    void pump()
+    {
+        ssh::Context ctx;
+        ctx.session = m_session;
+        ctx.sock = m_sock;
+        m_readBuf = QByteArray(32 * 1024, Qt::Uninitialized);
+
+        ssh::ForwardEngine fwd(
+            ctx, [this](const QVector<ForwardStatus> &all) { Q_EMIT forwardsChanged(all); },
+            [this](const QString &n) { Q_EMIT notice(n); });
+        ssh::SftpEngine sftp(
+            ctx, [this](const SftpResult &r) { Q_EMIT sftpFinished(r); },
+            [this](const SftpProgress &p) { Q_EMIT sftpProgress(p); },
+            [this](quint64 id) { return sftpCancelled(id); });
+
+        for (const PortForward &f : std::as_const(m_opts.forwards)) {
+            if (f.enabled && f.isValid())
+                fwd.add(m_control->nextId.fetch_add(1), f);
+        }
+
+        QString exitReason;
+        int nextKeepAlive = 30;
+        std::vector<net::PollItem> items;
+        const void *keepAliveTag = &nextKeepAlive;
+
+        while (!stopRequested()) {
+            takeControl(fwd, sftp);
+
+            bool progress = false;
+            const ShellStep shell = stepShell(ctx, exitReason);
+            if (shell == ShellStep::Exit)
+                break;
+            progress |= shell == ShellStep::Moved;
+            progress |= fwd.step();
+            progress |= sftp.step();
+
+            // Keep-alive: libssh2 drops its own EAGAIN here, which would leave
+            // a half-sent packet nobody finishes. Only send into a writable,
+            // otherwise idle socket.
+            if (m_opts.keepAliveSeconds > 0 && !ctx.owner && !ctx.outboundBlocked()
+                && (net::waitSocket(m_sock, false, true, m_waker, 0) & net::WaitSocket)) {
                 if (libssh2_keepalive_send(m_session, &nextKeepAlive) != 0
                     && libssh2_session_last_errno(m_session) != LIBSSH2_ERROR_EAGAIN) {
                     exitReason = QStringLiteral("Connection lost (keep-alive failed)");
                     break;
                 }
+                ctx.after(keepAliveTag, 0);
             }
 
-            const int timeout = flowBlocked() ? 20 : qBound(10, nextKeepAlive * 1000, 1000);
-            const int dir = libssh2_session_block_directions(m_session);
-            const bool wantWrite = writeBlocked || (dir & LIBSSH2_SESSION_BLOCK_OUTBOUND);
-            const int r = net::waitSocket(m_sock, !flowBlocked(), wantWrite, m_waker, timeout);
+            if (ctx.owner && ctx.ownerStalled(120000)) {
+                exitReason = QStringLiteral("Connection stalled: the server stopped accepting data");
+                break;
+            }
+
+            // Data libssh2 already pulled off the socket for some channel does
+            // not make the socket readable again: look for it before sleeping.
+            const bool buffered = (!flowBlocked() && libssh2_poll_channel_read(m_channel, 1) > 0)
+                                  || fwd.hasBufferedData() || sftp.hasBufferedData();
+            int timeout = flowBlocked() ? 20 : qBound(10, nextKeepAlive * 1000, 1000);
+            if (fwd.waitingOnSession() || sftp.busy() || ctx.owner || ctx.openOwner || !m_pendingWrites.empty())
+                timeout = qMin(timeout, 10);
+            if (progress || buffered)
+                timeout = 0;
+
+            items.clear();
+            net::PollItem sshItem;
+            sshItem.s = m_sock;
+            sshItem.wantRead = !flowBlocked() || fwd.readsSession() || sftp.busy();
+            sshItem.wantWrite = m_writeBlocked || ctx.outboundBlocked()
+                                || (libssh2_session_block_directions(m_session) & LIBSSH2_SESSION_BLOCK_OUTBOUND);
+            items.push_back(sshItem);
+            fwd.collectPoll(items);
+            const int r = net::waitMany(items, m_waker, timeout);
             if (r == net::WaitError) {
                 exitReason = QStringLiteral("Socket error: %1").arg(net::lastErrorString());
                 break;
@@ -767,15 +940,25 @@ private:
                 m_waker.drain();
         }
 
-        if (stopRequested())
-            setState(TransportState::Disconnected, QStringLiteral("Disconnected"));
-        else
-            setState(TransportState::Disconnected, exitReason);
+        m_exitReason = stopRequested() ? QStringLiteral("Disconnected") : exitReason;
+        sftp.abort(m_exitReason);
+        fwd.abandon();
+        ctx.owner = nullptr;
+        ctx.openOwner = nullptr;
+        setState(TransportState::Disconnected, m_exitReason);
     }
 
     SshOptions m_opts;
     QString m_password;
     QString m_knownHosts;
+    std::shared_ptr<SshControl> m_control;
+    QString m_exitReason;
+    std::deque<QByteArray> m_pendingWrites;
+    qsizetype m_pendingOffset = 0;
+    bool m_writeBlocked = false;
+    int m_shellPhase = 0;
+    int m_shellStream = 0;
+    QByteArray m_readBuf;
     QByteArray m_user;
     bool m_savedPasswordTried = false;
     bool m_rememberPassword = false;
@@ -794,8 +977,10 @@ private:
 
 SshTransport::SshTransport(const SshOptions &opts, const QString &savedPassword,
                            const QString &knownHostsPath, QObject *parent)
-    : Transport(parent), m_opts(opts), m_password(savedPassword), m_knownHosts(knownHostsPath)
+    : Transport(parent), m_opts(opts), m_password(savedPassword), m_knownHosts(knownHostsPath),
+      m_control(std::make_shared<SshControl>())
 {
+    registerSshMetaTypes();
 }
 
 SshTransport::~SshTransport()
@@ -805,7 +990,113 @@ SshTransport::~SshTransport()
 
 TransportWorker *SshTransport::createWorker()
 {
-    return new SshWorker(m_opts, m_password, m_knownHosts);
+    auto *w = new SshWorker(m_opts, m_password, m_knownHosts, m_control);
+    connect(w, &SshWorker::sftpProgress, this, &SshTransport::sftpProgress);
+    connect(w, &SshWorker::sftpFinished, this, [this](const SftpResult &r) {
+        {
+            std::lock_guard<std::mutex> lock(m_control->mx);
+            m_control->cancelled.erase(r.id);
+        }
+        Q_EMIT sftpFinished(r);
+    });
+    connect(w, &SshWorker::forwardsChanged, this, [this](const QVector<ForwardStatus> &all) {
+        m_forwards = all;
+        Q_EMIT forwardsChanged(all);
+    });
+    return w;
+}
+
+void SshTransport::failLater(const SftpRequest &req, const QString &why)
+{
+    SftpResult res;
+    res.id = req.id;
+    res.op = req.op;
+    res.path = req.path;
+    res.localPath = req.localPath;
+    res.error = why;
+    QMetaObject::invokeMethod(this, [this, res] { Q_EMIT sftpFinished(res); }, Qt::QueuedConnection);
+}
+
+quint64 SshTransport::submitSftp(SftpRequest req)
+{
+    req.id = m_control->nextId.fetch_add(1);
+    bool finished;
+    {
+        std::lock_guard<std::mutex> lock(m_control->mx);
+        finished = m_control->finished;
+        if (!finished)
+            m_control->sftp.push_back(req);
+    }
+    if (finished)
+        failLater(req, QStringLiteral("Not connected"));
+    else
+        wakeWorker();
+    return req.id;
+}
+
+void SshTransport::cancelSftp(quint64 id)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_control->mx);
+        if (m_control->finished)
+            return;
+        m_control->cancelled.insert(id);
+        // Not started yet: drop it from the queue.
+        for (auto it = m_control->sftp.begin(); it != m_control->sftp.end(); ++it) {
+            if (it->id == id) {
+                SftpRequest r = *it;
+                m_control->sftp.erase(it);
+                m_control->cancelled.erase(id);
+                SftpResult res;
+                res.id = r.id;
+                res.op = r.op;
+                res.path = r.path;
+                res.localPath = r.localPath;
+                res.cancelled = true;
+                res.error = QStringLiteral("Cancelled");
+                QMetaObject::invokeMethod(this, [this, res] { Q_EMIT sftpFinished(res); }, Qt::QueuedConnection);
+                return;
+            }
+        }
+    }
+    wakeWorker();
+}
+
+quint64 SshTransport::startForward(const PortForward &rule)
+{
+    const quint64 id = m_control->nextId.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lock(m_control->mx);
+        if (m_control->finished)
+            return 0;
+        m_control->adds.emplace_back(id, rule);
+    }
+    wakeWorker();
+    return id;
+}
+
+void SshTransport::stopForward(quint64 id)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_control->mx);
+        if (m_control->finished)
+            return;
+        m_control->removes.push_back(id);
+    }
+    wakeWorker();
+}
+
+void registerSshMetaTypes()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        qRegisterMetaType<SftpRequest>("termx::SftpRequest");
+        qRegisterMetaType<SftpResult>("termx::SftpResult");
+        qRegisterMetaType<SftpProgress>("termx::SftpProgress");
+        qRegisterMetaType<PortForward>("termx::PortForward");
+        qRegisterMetaType<ForwardStatus>("termx::ForwardStatus");
+        qRegisterMetaType<QVector<ForwardStatus>>("QVector<termx::ForwardStatus>");
+    });
 }
 
 bool SshTransport::globalInit()
@@ -820,3 +1111,5 @@ void SshTransport::globalCleanup()
 }
 
 } // namespace termx
+
+#include "SshTransport.moc"
