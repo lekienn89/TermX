@@ -38,10 +38,6 @@ public:
     // Stops every lane without touching libssh2 again and fails what is left.
     void abort(const QString &why);
 
-    // Helpers shared with tests.
-    static bool safeLocalName(const QString &remoteName, QString &out);
-    static QString joinRemote(const QString &dir, const QString &name);
-
 private:
     class Lane;
     // Declared before the lanes: they hold references to these.

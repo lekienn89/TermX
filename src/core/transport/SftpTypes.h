@@ -31,6 +31,10 @@ enum class SftpOp {
 };
 
 QString sftpOpName(SftpOp op);
+// A remote file name made safe to create in a local folder on Windows:
+// false for names that must be skipped ("", ".", "..", anything with '/').
+bool sftpSafeLocalName(const QString &remoteName, QString &out);
+QString sftpJoinRemote(const QString &dir, const QString &name);
 
 struct SftpRequest {
     quint64 id = 0;           // set by SshTransport::submitSftp

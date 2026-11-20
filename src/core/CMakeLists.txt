@@ -2,7 +2,7 @@ add_library(termx_core STATIC
     transport/Transport.cpp transport/Transport.h
     transport/SocketUtil.cpp transport/SocketUtil.h
     transport/SshTransport.cpp transport/SshTransport.h
-    transport/SshContext.h transport/SftpTypes.h
+    transport/SshContext.h transport/SftpTypes.cpp transport/SftpTypes.h
     transport/SshForwarding.cpp transport/SshForwarding.h
     transport/SftpEngine.cpp transport/SftpEngine.h
     transport/SocksProtocol.cpp transport/SocksProtocol.h

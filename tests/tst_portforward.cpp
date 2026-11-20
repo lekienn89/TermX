@@ -2,7 +2,7 @@
 #include "session/PortForward.h"
 #include "session/SessionConfig.h"
 #include "session/SessionImport.h"
-#include "transport/SftpEngine.h"
+#include "transport/SftpTypes.h"
 
 #include <QtTest>
 
@@ -170,16 +170,16 @@ private slots:
         QFETCH(bool, ok);
         QFETCH(QString, local);
         QString out;
-        QCOMPARE(ssh::SftpEngine::safeLocalName(remote, out), ok);
+        QCOMPARE(sftpSafeLocalName(remote, out), ok);
         if (ok)
             QCOMPARE(out, local);
     }
 
     void joinRemote()
     {
-        QCOMPARE(ssh::SftpEngine::joinRemote(QStringLiteral("/"), QStringLiteral("a")), QStringLiteral("/a"));
-        QCOMPARE(ssh::SftpEngine::joinRemote(QStringLiteral("/x"), QStringLiteral("a")), QStringLiteral("/x/a"));
-        QCOMPARE(ssh::SftpEngine::joinRemote(QStringLiteral("/x/"), QStringLiteral("a")), QStringLiteral("/x/a"));
+        QCOMPARE(sftpJoinRemote(QStringLiteral("/"), QStringLiteral("a")), QStringLiteral("/a"));
+        QCOMPARE(sftpJoinRemote(QStringLiteral("/x"), QStringLiteral("a")), QStringLiteral("/x/a"));
+        QCOMPARE(sftpJoinRemote(QStringLiteral("/x/"), QStringLiteral("a")), QStringLiteral("/x/a"));
     }
 };
 

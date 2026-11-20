@@ -3,7 +3,7 @@
 
 #include "ForwardWidgets.h"   // formatBytes
 #include "terminal/TerminalSession.h"
-#include "transport/SftpEngine.h"
+#include "transport/SftpTypes.h"
 #include "transport/SshTransport.h"
 
 #include <QApplication>
@@ -191,9 +191,9 @@ SftpPanel::SftpPanel(QSettings *settings, QWidget *parent) : QWidget(parent), m_
         if (p == QLatin1String("~") || p.isEmpty())
             p = m_home.isEmpty() ? QStringLiteral(".") : m_home;
         else if (p.startsWith(QLatin1String("~/")) && !m_home.isEmpty())
-            p = ssh::SftpEngine::joinRemote(m_home, p.mid(2));
+            p = sftpJoinRemote(m_home, p.mid(2));
         else if (!p.startsWith(QLatin1Char('/')) && !m_cwd.isEmpty())
-            p = ssh::SftpEngine::joinRemote(m_cwd, p);
+            p = sftpJoinRemote(m_cwd, p);
         navigate(p);
     });
     connect(m_list, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *it) {
@@ -555,7 +555,7 @@ QStringList SftpPanel::selectedNames(bool *anyDir) const
 
 QString SftpPanel::remotePath(const QString &name) const
 {
-    return ssh::SftpEngine::joinRemote(m_cwd, name);
+    return sftpJoinRemote(m_cwd, name);
 }
 
 QString SftpPanel::downloadDir() const
@@ -582,7 +582,7 @@ void SftpPanel::downloadSelected(bool chooseFolder)
     QStringList existing;
     for (const QString &n : names) {
         QString safe;
-        if (ssh::SftpEngine::safeLocalName(n, safe) && QFileInfo::exists(QDir(dir).filePath(safe)))
+        if (sftpSafeLocalName(n, safe) && QFileInfo::exists(QDir(dir).filePath(safe)))
             existing << safe;
     }
     bool overwrite = false;
@@ -599,7 +599,7 @@ void SftpPanel::downloadSelected(bool chooseFolder)
     }
     for (const QString &n : names) {
         QString safe;
-        if (!ssh::SftpEngine::safeLocalName(n, safe)) {
+        if (!sftpSafeLocalName(n, safe)) {
             setMessage(tr("\"%1\" is not a safe file name here; skipped").arg(n), true);
             continue;
         }
@@ -644,7 +644,7 @@ void SftpPanel::upload(const QStringList &localPaths, const QString &remoteDir)
         SftpRequest r;
         r.op = SftpOp::Upload;
         r.localPath = fi.absoluteFilePath();
-        r.path = ssh::SftpEngine::joinRemote(remoteDir, fi.fileName());
+        r.path = sftpJoinRemote(remoteDir, fi.fileName());
         r.overwrite = overwrite;
         submit(r, remoteDir);
     }
