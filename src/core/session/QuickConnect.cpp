@@ -147,6 +147,15 @@ bool parseSshCommand(const QStringList &args, SessionConfig &c, QString *error)
             if (!value(v))
                 return fail(error, QStringLiteral("Missing key file after -i"));
             c.ssh.keyFile = v;
+        } else if (a.startsWith(QLatin1String("-L")) || a.startsWith(QLatin1String("-R")) || a.startsWith(QLatin1String("-D"))) {
+            const QChar kind = a.at(1);
+            if (!value(v))
+                return fail(error, QStringLiteral("Missing forwarding rule after -%1").arg(kind));
+            QString why;
+            const auto f = PortForward::parseOption(kind + v, &why);
+            if (!f)
+                return fail(error, QStringLiteral("-%1 %2: %3").arg(kind).arg(v, why));
+            c.ssh.forwards << *f;
         } else if (a.startsWith(QLatin1Char('-'))) {
             // Options that take a value we do not use; skip it so it is not taken as the host.
             static const QString withValue = QStringLiteral("bcDEeFIJLmOoQRSWw");
@@ -296,6 +305,8 @@ QString toText(const SessionConfig &c)
         QString s = c.ssh.username.isEmpty() ? host : c.ssh.username + QLatin1Char('@') + host;
         if (c.ssh.port != 22)
             s += QLatin1Char(':') + QString::number(c.ssh.port);
+        for (const PortForward &f : c.ssh.forwards)
+            s += QLatin1Char(' ') + f.option();
         return s;
     }
     case SessionType::Telnet:

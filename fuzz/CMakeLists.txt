@@ -17,3 +17,4 @@ endfunction()
 termx_add_fuzzer(fuzz_vtscreen)  # regressions: fuzz/regressions/vtscreen
 termx_add_fuzzer(fuzz_telnet)
 termx_add_fuzzer(fuzz_ansistripper)
+termx_add_fuzzer(fuzz_socks)

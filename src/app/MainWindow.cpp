@@ -6,7 +6,9 @@
 #include <QScreen>
 #include <QWindow>
 
+#include "ForwardWidgets.h"
 #include "Panels.h"
+#include "SftpPanel.h"
 #include "PromptDialog.h"
 #include "PreferencesDialog.h"
 #include "QuickConnectBar.h"
@@ -247,6 +249,44 @@ void MainWindow::createDocks()
     addDockWidget(Qt::RightDockWidgetArea, m_snippetDock);
     tabifyDockWidget(m_historyDock, m_snippetDock);
     m_snippetDock->hide();
+    m_sftpPanel = new SftpPanel(m_settings.get(), this);
+    m_sftpDock = new QDockWidget(tr("SFTP"), this);
+    m_sftpDock->setObjectName(QStringLiteral("dock.sftp"));
+    m_sftpPanel->setMinimumWidth(280);
+    m_sftpDock->setWidget(m_sftpPanel);
+    addDockWidget(Qt::LeftDockWidgetArea, m_sftpDock);
+    tabifyDockWidget(m_sessionDock, m_sftpDock);
+    m_sftpDock->hide();
+    connect(m_sftpDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (visible)
+            m_sftpPanel->activate();
+    });
+
+    m_forwardsPanel = new ForwardsPanel(this);
+    m_forwardsDock = new QDockWidget(tr("Port Forwarding"), this);
+    m_forwardsDock->setObjectName(QStringLiteral("dock.forwards"));
+    m_forwardsDock->setWidget(m_forwardsPanel);
+    addDockWidget(Qt::RightDockWidgetArea, m_forwardsDock);
+    tabifyDockWidget(m_historyDock, m_forwardsDock);
+    m_forwardsDock->hide();
+    connect(m_forwardsPanel, &ForwardsPanel::saveRuleRequested, this, [this](TerminalSession *s, const PortForward &rule) {
+        if (!s || s->config().id.isEmpty())
+            return;
+        const SessionConfig *saved = m_sessions->find(s->config().id);
+        if (!saved)
+            return;
+        SessionConfig c = *saved;
+        PortForward keep = rule;
+        keep.enabled = true;
+        c.ssh.forwards << keep;
+        m_sessions->upsert(c);
+        SessionConfig live = s->config();
+        live.ssh.forwards = c.ssh.forwards;
+        s->setConfig(live);
+        m_toast->showMessage(tr("Port forwarding saved"),
+                             tr("%1 starts with \"%2\" from now on.").arg(rule.option(), c.displayName()), {}, 5000);
+    });
+
     connect(m_snippetPanel, &SnippetPanel::runRequested, this, [this](const QString &t) { runSnippetText(t, true); });
     connect(m_snippetPanel, &SnippetPanel::pasteRequested, this, [this](const QString &t) { runSnippetText(t, false); });
 
@@ -401,6 +441,26 @@ void MainWindow::createActions()
     connect(snip, &QAction::toggled, this, [this](bool on) {
         if (on)
             QTimer::singleShot(0, m_snippetPanel, &SnippetPanel::focusFilter);
+    });
+    QAction *sftp = m_sftpDock->toggleViewAction();
+    sftp->setText(tr("SFTP Browser"));
+    sftp->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
+    view->addAction(sftp);
+    addAction(sftp);
+    registerShortcut(sftp, view->title());
+    connect(sftp, &QAction::toggled, this, [this](bool on) {
+        if (on)
+            m_sftpDock->raise();
+    });
+    QAction *fwd = m_forwardsDock->toggleViewAction();
+    fwd->setText(tr("Port Forwarding"));
+    fwd->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+J")));
+    view->addAction(fwd);
+    addAction(fwd);
+    registerShortcut(fwd, view->title());
+    connect(fwd, &QAction::toggled, this, [this](bool on) {
+        if (on)
+            m_forwardsDock->raise();
     });
     view->addSeparator();
     QMenu *theme = view->addMenu(tr("Theme"));
@@ -1138,6 +1198,8 @@ void MainWindow::updateStatus()
     if (m_quitting)
         return;
     TerminalSession *s = currentSession();
+    m_sftpPanel->setSession(s);
+    m_forwardsPanel->setSession(s);
     const bool has = s != nullptr;
     m_actReconnect->setEnabled(has);
     m_actDisconnect->setEnabled(has && s->state() == TransportState::Connected);
@@ -1330,6 +1392,16 @@ void MainWindow::closeEvent(QCloseEvent *e)
     for (TerminalView *v : allViews())
         if (v->session()->state() == TransportState::Connected && v->session()->config().type != SessionType::LocalShell)
             ++connected;
+    const int transfers = m_sftpPanel->activeTransfers();
+    if (transfers > 0) {
+        const auto r = QMessageBox::question(this, tr("Exit TermX"),
+                                             tr("%n file transfer(s) still running. Cancel them and exit?", nullptr, transfers));
+        if (r != QMessageBox::Yes) {
+            e->ignore();
+            return;
+        }
+        connected = 0;   // already confirmed
+    }
     if (connected > 0) {
         const auto r = QMessageBox::question(this, tr("Exit TermX"),
                                              tr("%n session(s) still connected. Disconnect and exit?", nullptr, connected));

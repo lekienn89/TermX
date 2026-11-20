@@ -195,7 +195,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake ninja-build g++ \
-            qt6-base-dev qt6-base-dev-tools qt6-serialport-dev libssh2-1-dev libsqlite3-dev
+            qt6-base-dev qt6-base-dev-tools qt6-serialport-dev libssh2-1-dev libsqlite3-dev \
+            openssh-server openssh-client
+          # tst_sshintegration runs its own sshd as this user on a free local port.
+          sudo mkdir -p /run/sshd
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTERMX_WERROR=ON -DTERMX_ASAN=ON
       - name: Build
@@ -222,11 +225,11 @@ jobs:
             -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" \
             -DTERMX_BUILD_FUZZERS=ON -DTERMX_BUILD_TESTS=OFF
-          cmake --build build --target fuzz_vtscreen fuzz_telnet fuzz_ansistripper
+          cmake --build build --target fuzz_vtscreen fuzz_telnet fuzz_ansistripper fuzz_socks
       - name: Run fuzzers
         # Seed each corpus with the saved crash inputs so old bugs are retried first.
         run: |
-          for f in fuzz_vtscreen fuzz_telnet fuzz_ansistripper; do
+          for f in fuzz_vtscreen fuzz_telnet fuzz_ansistripper fuzz_socks; do
             mkdir -p corpus/$f; cp fuzz/regressions/${f#fuzz_}/* corpus/$f/ 2>/dev/null || true
             build/fuzz/$f corpus/$f -max_total_time=120 -rss_limit_mb=2048 -timeout=10
           done

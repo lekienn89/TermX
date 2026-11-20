@@ -19,6 +19,7 @@
 namespace termx {
 
 class HistoryStore;
+class SshTransport;
 
 class TerminalSession : public QObject {
     Q_OBJECT
@@ -33,6 +34,8 @@ public:
     TransportState state() const { return m_transport ? m_transport->state() : TransportState::Idle; }
     QString statusMessage() const { return m_statusMessage; }
     QString title() const;
+    // The live SSH connection (SFTP, port forwarding), or null.
+    SshTransport *sshTransport() const;
 
     void start();
     void stop();
@@ -77,6 +80,7 @@ Q_SIGNALS:
     void secretAccepted(const QString &secret);
     void legacyAlgorithmsAccepted();
     void inputChanged();      // the user typed: suggestion popup may update
+    void transportChanged();  // sshTransport() now returns a different object (or null)
 
 private:
     void createTransport();

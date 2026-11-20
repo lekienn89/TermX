@@ -43,6 +43,11 @@ QString TerminalSession::title() const
     return t.isEmpty() ? m_cfg.displayName() : t;
 }
 
+SshTransport *TerminalSession::sshTransport() const
+{
+    return qobject_cast<SshTransport *>(m_transport.get());
+}
+
 void TerminalSession::createTransport()
 {
     m_savedPassword = CredentialStore::decrypt(m_cfg.encryptedPassword);
@@ -91,6 +96,7 @@ void TerminalSession::createTransport()
         m_cfg.ssh.allowLegacyAlgorithms = true;
         Q_EMIT legacyAlgorithmsAccepted();
     });
+    Q_EMIT transportChanged();
 }
 
 void TerminalSession::start()
@@ -113,6 +119,7 @@ void TerminalSession::stop()
         t->disconnect(this);
         t->close();
         t->deleteLater();
+        Q_EMIT transportChanged();
     }
 }
 
