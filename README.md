@@ -21,7 +21,8 @@ Current release: **1.0.1**. Download the MSI installer (or the portable zip) fro
 - **Command history like WindTerm**: commands are read from the screen when you press Enter,
   suggested as you type (→ or End to accept), and searchable in a history panel (SQLite FTS5).
   Passwords and secrets are never recorded.
-- Tabs, split panes, 100k-line scrollback, find, copy on select, safe multi-line paste,
+- **TeraTerm / PuTTY mouse**: selecting text copies it, right-click pastes (Shift+right-click opens the menu).
+- Tabs, split panes, 100k-line scrollback, find, safe multi-line paste,
   bracketed paste, session logging, session tree with folders, dark and light themes.
 - **Quick Connect bar** (Ctrl+Shift+K): type `admin@10.0.0.1`, `ssh -p 2222 host`, `telnet host 23`,
   `COM3 115200` or the name of a saved session.

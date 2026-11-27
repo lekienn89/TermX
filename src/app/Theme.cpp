@@ -202,6 +202,10 @@ qreal Theme::terminalFontSize() { return g_fontSize; }
 
 TerminalPrefs &Theme::prefs() { return g_prefs; }
 
+namespace {
+constexpr int kMousePrefsVersion = 2;
+}
+
 void Theme::loadPrefs(const QSettings &s)
 {
     TerminalPrefs d;
@@ -210,6 +214,13 @@ void Theme::loadPrefs(const QSettings &s)
     g_prefs.cursorBlink = s.value(QStringLiteral("terminal/cursorBlink"), d.cursorBlink).toBool();
     g_prefs.copyOnSelect = s.value(QStringLiteral("terminal/copyOnSelect"), d.copyOnSelect).toBool();
     g_prefs.rightClickPaste = s.value(QStringLiteral("terminal/rightClickPaste"), d.rightClickPaste).toBool();
+    // Settings written before mouse prefs version 2 stored the old defaults
+    // (right-click opened a menu). Switch them once to the PuTTY / TeraTerm
+    // behaviour: right-click pastes and selecting text copies it.
+    if (s.value(QStringLiteral("terminal/mousePrefsVersion"), 0).toInt() < kMousePrefsVersion) {
+        g_prefs.copyOnSelect = true;
+        g_prefs.rightClickPaste = true;
+    }
 }
 
 void Theme::savePrefs(QSettings &s)
@@ -219,6 +230,7 @@ void Theme::savePrefs(QSettings &s)
     s.setValue(QStringLiteral("terminal/cursorBlink"), g_prefs.cursorBlink);
     s.setValue(QStringLiteral("terminal/copyOnSelect"), g_prefs.copyOnSelect);
     s.setValue(QStringLiteral("terminal/rightClickPaste"), g_prefs.rightClickPaste);
+    s.setValue(QStringLiteral("terminal/mousePrefsVersion"), kMousePrefsVersion);
 }
 
 void Theme::applyTitleBar(QWidget *w)

@@ -32,7 +32,7 @@ struct TerminalPrefs {
     int cursorShape = CursorDefault;   // CursorDefault lets the remote program decide
     bool cursorBlink = true;
     bool copyOnSelect = true;
-    bool rightClickPaste = false;  // PuTTY style; Shift+right-click still opens the menu
+    bool rightClickPaste = true;   // PuTTY / TeraTerm style; Shift+right-click still opens the menu
 };
 
 class Theme {
