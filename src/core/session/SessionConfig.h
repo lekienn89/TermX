@@ -47,7 +47,7 @@ struct TelnetOptions {
 struct SerialOptions {
     QString portName;                // e.g. COM7 (may change between plugs)
     QString deviceKey;               // stable identity of the USB adapter, if known
-    int baudRate = 9600;
+    int baudRate = 115200;
     int dataBits = 8;
     QChar parity = QLatin1Char('N'); // N E O M S
     int stopBits = 1;                // 1, 2 (3 = 1.5)
@@ -91,9 +91,9 @@ struct SessionConfig {
     static SessionConfig fromJson(const QJsonObject &o);
 
     QString displayName() const;     // name, or a generated one
-    QString target() const;          // user@host:port, COM7 9600 8N1, ...
+    QString target() const;          // user@host:port, COM7 115200 8N1, ...
     QString historyHost() const;     // key used to group command history
-    QString serialSummary() const;   // "9600 8N1"
+    QString serialSummary() const;   // "115200 8N1"
 };
 
 } // namespace termx

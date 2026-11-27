@@ -18,7 +18,7 @@ public:
     bool save() const;
 
     bool contains(const QString &deviceKey) const { return m_map.contains(deviceKey); }
-    // Returns remembered options, or defaults (9600 8N1, no flow control).
+    // Returns remembered options, or defaults (115200 8N1, no flow control).
     SerialOptions optionsFor(const QString &deviceKey, const QString &portName) const;
     QString nameFor(const QString &deviceKey) const;
     void remember(const QString &deviceKey, const SerialOptions &opts, const QString &name = QString());
