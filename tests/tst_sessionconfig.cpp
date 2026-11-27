@@ -84,7 +84,7 @@ private slots:
     {
         const SessionConfig d = SessionConfig::fromJson(QJsonObject());
         QCOMPARE(d.ssh.port, 22);
-        QCOMPARE(d.serial.baudRate, 9600);
+        QCOMPARE(d.serial.baudRate, 115200);
     }
 };
 
