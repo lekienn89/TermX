@@ -71,7 +71,7 @@ private slots:
         QTest::addColumn<QString>("text");
         QTest::addColumn<QString>("port");
         QTest::addColumn<int>("baud");
-        QTest::newRow("com") << "COM7" << "COM7" << 9600;
+        QTest::newRow("com") << "COM7" << "COM7" << 115200;
         QTest::newRow("lower") << "com12 115200" << "COM12" << 115200;
         QTest::newRow("colon") << "COM3:38400" << "COM3" << 38400;
         QTest::newRow("url") << "serial://COM7?baud=57600" << "COM7" << 57600;

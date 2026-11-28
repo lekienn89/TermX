@@ -185,7 +185,7 @@ SessionConfig SessionConfig::fromJson(const QJsonObject &o)
     const QJsonObject k = o.value(QStringLiteral("serial")).toObject();
     c.serial.portName = k.value(QStringLiteral("port")).toString();
     c.serial.deviceKey = k.value(QStringLiteral("deviceKey")).toString();
-    c.serial.baudRate = clampInt(k.value(QStringLiteral("baud")), 9600, 50, 16000000);
+    c.serial.baudRate = clampInt(k.value(QStringLiteral("baud")), SerialOptions().baudRate, 50, 16000000);
     c.serial.dataBits = clampInt(k.value(QStringLiteral("dataBits")), 8, 5, 8);
     const QString par = k.value(QStringLiteral("parity")).toString(QStringLiteral("N")).toUpper();
     c.serial.parity = (par.size() == 1 && QStringLiteral("NEOMS").contains(par)) ? par.at(0) : QLatin1Char('N');
