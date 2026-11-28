@@ -134,6 +134,24 @@ private slots:
             QCOMPARE(a.target(), b.target());
         }
     }
+    void sshForwards()
+    {
+        SessionConfig c;
+        QString err;
+        QVERIFY2(QuickConnect::parse(QStringLiteral("ssh -L 8080:localhost:80 -D1080 -R 9000:localhost:3000 admin@bastion"), c, &err),
+                 qPrintable(err));
+        QCOMPARE(c.ssh.host, QStringLiteral("bastion"));
+        QCOMPARE(c.ssh.forwards.size(), 3);
+        QCOMPARE(c.ssh.forwards[0].option(), QStringLiteral("-L 8080:localhost:80"));
+        QCOMPARE(c.ssh.forwards[1].option(), QStringLiteral("-D 1080"));
+        QCOMPARE(c.ssh.forwards[2].option(), QStringLiteral("-R 9000:localhost:3000"));
+        const QString text = QuickConnect::toText(c);
+        SessionConfig again;
+        QVERIFY2(QuickConnect::parse(text, again, &err), qPrintable(err));
+        QCOMPARE(again.ssh.forwards.size(), 3);
+        QVERIFY(!QuickConnect::parse(QStringLiteral("ssh -L nonsense host"), c, &err));
+        QVERIFY(err.contains(QStringLiteral("-L")));
+    }
 };
 
 QTEST_GUILESS_MAIN(TstQuickConnect)

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "PortForward.h"
+
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
@@ -35,6 +37,7 @@ struct SshOptions {
     int keepAliveSeconds = 30;       // 0 = off
     int connectTimeoutSeconds = 15;
     QString termType = QStringLiteral("xterm-256color");
+    QVector<PortForward> forwards;   // started automatically after login (enabled ones)
 };
 
 struct TelnetOptions {

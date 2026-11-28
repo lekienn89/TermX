@@ -121,6 +121,13 @@ bool fromPuttyValues(const QString &encodedName, const QVariantMap &v, SessionCo
         const QString term = v.value(QStringLiteral("TerminalType")).toString();
         if (!term.isEmpty() && term != QLatin1String("xterm"))
             c.ssh.termType = term;
+        const QString fw = v.value(QStringLiteral("PortForwardings")).toString();
+        if (!fw.isEmpty()) {
+            QStringList fwWarnings;
+            c.ssh.forwards = PortForward::parsePutty(fw, &fwWarnings);
+            for (const QString &w : std::as_const(fwWarnings))
+                warn(w);
+        }
         return true;
     }
     if (protocol == QLatin1String("telnet") || protocol == QLatin1String("raw")) {
@@ -210,6 +217,7 @@ Result parseOpenSshConfig(const QString &text, const QString &homeDir)
     struct Block {
         QStringList patterns;
         QHash<QString, QString> opts;   // lower-case keyword -> first value
+        QStringList forwards;           // "-L spec" for every *Forward line, in order
         bool inMatch = false;
     };
     QList<Block> blocks;
@@ -239,6 +247,11 @@ Result parseOpenSshConfig(const QString &text, const QString &homeDir)
             b.inMatch = true;
             blocks << b;
             cur = &blocks.last();
+        } else if (key == QLatin1String("localforward") || key == QLatin1String("remoteforward")
+                   || key == QLatin1String("dynamicforward")) {
+            // "LocalForward [bind:]port host:hostport" -> "L[bind:]port:host:hostport"
+            const QStringList words = value.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+            cur->forwards << QString(key.at(0).toUpper()) + words.join(QLatin1Char(':'));
         } else if (!cur->opts.contains(key)) {
             cur->opts.insert(key, value);
         }
@@ -271,6 +284,13 @@ Result parseOpenSshConfig(const QString &text, const QString &homeDir)
             const int alive = opt("serveraliveinterval").toInt(&ok);
             if (ok && alive >= 0)
                 c.ssh.keepAliveSeconds = alive;
+            for (const QString &rule : b.forwards + global.forwards) {
+                QString err;
+                if (auto f = PortForward::parseOption(rule, &err))
+                    c.ssh.forwards << *f;
+                else
+                    r.warnings << QStringLiteral("%1: port forwarding \"%2\" skipped: %3").arg(alias, rule.mid(1), err);
+            }
             if (!opt("proxyjump").isEmpty() || !opt("proxycommand").isEmpty())
                 r.warnings << QStringLiteral("%1: ProxyJump/ProxyCommand is not supported yet; imported without it").arg(alias);
             r.sessions << c;

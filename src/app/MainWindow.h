@@ -20,7 +20,9 @@ class QTabWidget;
 
 namespace termx {
 
+class ForwardsPanel;
 class HistoryPanel;
+class SftpPanel;
 class QuickConnectBar;
 class CommandPalette;
 class SnippetPanel;
@@ -110,6 +112,10 @@ private:
     QDockWidget *m_sessionDock;
     QDockWidget *m_serialDock;
     QDockWidget *m_historyDock;
+    SftpPanel *m_sftpPanel = nullptr;
+    QDockWidget *m_sftpDock = nullptr;
+    ForwardsPanel *m_forwardsPanel = nullptr;
+    QDockWidget *m_forwardsDock = nullptr;
     QLabel *m_statusState;
     QLabel *m_statusSize;
     QLabel *m_statusLog;

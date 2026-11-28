@@ -22,6 +22,11 @@ termx_add_test(tst_sessionimport)
 termx_add_test(tst_securewipe)
 termx_add_test(tst_snippetstore)
 termx_add_test(tst_fuzzymatch)
+termx_add_test(tst_portforward)
+termx_add_test(tst_socks)
+# Starts a private sshd when OpenSSH server is installed; skipped otherwise.
+termx_add_test(tst_sshintegration)
+set_tests_properties(tst_sshintegration PROPERTIES TIMEOUT 600)
 
 # Crash inputs found by fuzzing, replayed through the fuzz harnesses.
 add_executable(tst_fuzz_vtscreen tst_fuzzregressions.cpp ${PROJECT_SOURCE_DIR}/fuzz/fuzz_vtscreen.cpp)

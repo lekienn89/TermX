@@ -97,6 +97,12 @@ QJsonObject SessionConfig::toJson() const
     s[QStringLiteral("keepAlive")] = ssh.keepAliveSeconds;
     s[QStringLiteral("timeout")] = ssh.connectTimeoutSeconds;
     s[QStringLiteral("term")] = ssh.termType;
+    if (!ssh.forwards.isEmpty()) {
+        QJsonArray fw;
+        for (const PortForward &f : ssh.forwards)
+            fw.append(f.toJson());
+        s[QStringLiteral("forwards")] = fw;
+    }
     o[QStringLiteral("ssh")] = s;
 
     QJsonObject t;
@@ -161,6 +167,14 @@ SessionConfig SessionConfig::fromJson(const QJsonObject &o)
     c.ssh.keepAliveSeconds = clampInt(s.value(QStringLiteral("keepAlive")), 30, 0, 3600);
     c.ssh.connectTimeoutSeconds = clampInt(s.value(QStringLiteral("timeout")), 15, 1, 300);
     c.ssh.termType = s.value(QStringLiteral("term")).toString(QStringLiteral("xterm-256color"));
+    const QJsonArray fw = s.value(QStringLiteral("forwards")).toArray();
+    for (const QJsonValue &v : fw) {
+        if (c.ssh.forwards.size() >= 64)
+            break;
+        const PortForward f = PortForward::fromJson(v.toObject());
+        if (f.isValid())
+            c.ssh.forwards << f;
+    }
 
     const QJsonObject t = o.value(QStringLiteral("telnet")).toObject();
     c.telnet.host = t.value(QStringLiteral("host")).toString();

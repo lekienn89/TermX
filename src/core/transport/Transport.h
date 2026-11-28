@@ -165,6 +165,7 @@ Q_SIGNALS:
 
 protected:
     virtual TransportWorker *createWorker() = 0;
+    void wakeWorker() { m_shared->wake(); }
 
 private:
     void onWorkerState(TransportState s, const QString &message);

@@ -15,6 +15,8 @@ class QStackedWidget;
 
 namespace termx {
 
+class ForwardRulesEditor;
+
 class SessionDialog : public QDialog {
     Q_OBJECT
 public:
@@ -48,6 +50,7 @@ private:
     QLabel *m_sshLegacyWarn;
     QComboBox *m_sshHostKey;
     QSpinBox *m_sshKeepAlive;
+    ForwardRulesEditor *m_sshForwards;
     // Telnet
     QLineEdit *m_telHost;
     QSpinBox *m_telPort;

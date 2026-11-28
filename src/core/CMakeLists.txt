@@ -2,6 +2,10 @@ add_library(termx_core STATIC
     transport/Transport.cpp transport/Transport.h
     transport/SocketUtil.cpp transport/SocketUtil.h
     transport/SshTransport.cpp transport/SshTransport.h
+    transport/SshContext.h transport/SftpTypes.cpp transport/SftpTypes.h
+    transport/SshForwarding.cpp transport/SshForwarding.h
+    transport/SftpEngine.cpp transport/SftpEngine.h
+    transport/SocksProtocol.cpp transport/SocksProtocol.h
     transport/TelnetProtocol.cpp transport/TelnetProtocol.h
     transport/TelnetTransport.cpp transport/TelnetTransport.h
     transport/SerialTransport.cpp transport/SerialTransport.h
@@ -15,6 +19,7 @@ add_library(termx_core STATIC
     serial/SerialPortWatcher.cpp serial/SerialPortWatcher.h
     serial/DeviceProfiles.cpp serial/DeviceProfiles.h
     session/SessionConfig.cpp session/SessionConfig.h
+    session/PortForward.cpp session/PortForward.h
     session/SessionStore.cpp session/SessionStore.h
     session/QuickConnect.cpp session/QuickConnect.h
     session/SessionImport.cpp session/SessionImport.h

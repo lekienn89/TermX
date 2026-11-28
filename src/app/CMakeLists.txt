@@ -13,6 +13,8 @@ set(TERMX_APP_SOURCES
     QuickConnectBar.cpp QuickConnectBar.h
     SnippetPanel.cpp SnippetPanel.h
     CommandPalette.cpp CommandPalette.h
+    ForwardWidgets.cpp ForwardWidgets.h
+    SftpPanel.cpp SftpPanel.h
     ${PROJECT_SOURCE_DIR}/resources/termx.qrc
 )
 if(WIN32)
